@@ -1,0 +1,326 @@
+"""
+src/cache.py
+============
+Parquet-based preprocessing cache for the Amazon ML Challenge 2026 pipeline.
+
+All source records (S1, S2, S3 for both train and test splits) are preprocessed
+exactly once using src.preprocess.preprocess_dataframe() and saved to disk as
+Parquet files in the project-level cache/ directory.
+
+Downstream notebooks and scripts load a preprocessed source with load_cache()
+instead of re-running normalization on every run.
+
+Public API
+----------
+    build_cache(split, source, data_dir, cache_dir, force=False)
+    load_cache(split, source, cache_dir)
+    cache_exists(split, source, cache_dir)
+    validate_cache(split, source, cache_dir)
+
+Naming convention
+-----------------
+    TSV  :  <data_dir>/<split>_<source>.tsv     e.g.  /content/train_source1.tsv
+    Cache:  <cache_dir>/<split>_<source>.parquet e.g.  cache/train_source1.parquet
+
+Design principles
+-----------------
+    • Normalization is delegated entirely to preprocess_dataframe(); no
+      normalization logic is duplicated here.
+    • Original TSV files are never modified.
+    • The cache directory is created automatically if it does not exist.
+    • build_cache() is idempotent by default: it skips rebuilding if the cache
+      file already exists unless force=True is passed.
+    • load_cache() never rebuilds; it raises FileNotFoundError if the cache is
+      absent.
+    • No candidate-pair generation, fuzzy matching, blocking, ML training,
+      feature engineering, or submission logic is present in this module.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Union
+
+import pandas as pd
+
+from src.preprocess import preprocess_dataframe, _OUTPUT_COLUMNS
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Constants
+# ──────────────────────────────────────────────────────────────────────────────
+
+_VALID_SPLITS  = {"train", "test"}
+_VALID_SOURCES = {"source1", "source2", "source3"}
+
+# Exactly the 14 columns that preprocess_dataframe() guarantees.
+_REQUIRED_COLUMNS = set(_OUTPUT_COLUMNS)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Internal helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _validate_args(split: str, source: str) -> None:
+    """Raise ValueError if split or source is not recognised."""
+    if split not in _VALID_SPLITS:
+        raise ValueError(
+            f"split must be one of {_VALID_SPLITS!r}, got {split!r}"
+        )
+    if source not in _VALID_SOURCES:
+        raise ValueError(
+            f"source must be one of {_VALID_SOURCES!r}, got {source!r}"
+        )
+
+
+def _cache_path(split: str, source: str, cache_dir: Union[str, Path]) -> Path:
+    """Return the expected Parquet file path for (split, source)."""
+    return Path(cache_dir) / f"{split}_{source}.parquet"
+
+
+def _tsv_path(split: str, source: str, data_dir: Union[str, Path]) -> Path:
+    """Return the expected TSV file path for (split, source)."""
+    return Path(data_dir) / f"{split}_{source}.tsv"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Public API
+# ──────────────────────────────────────────────────────────────────────────────
+
+def cache_exists(
+    split: str,
+    source: str,
+    cache_dir: Union[str, Path] = "cache",
+) -> bool:
+    """
+    Return True if the Parquet cache file for (split, source) exists on disk.
+
+    Args:
+        split:     "train" or "test".
+        source:    "source1", "source2", or "source3".
+        cache_dir: Directory that contains the Parquet files. Defaults to
+                   "cache" (relative to the current working directory).
+
+    Returns:
+        True if the expected Parquet file is present; False otherwise.
+    """
+    _validate_args(split, source)
+    return _cache_path(split, source, cache_dir).is_file()
+
+
+def build_cache(
+    split: str,
+    source: str,
+    data_dir: Union[str, Path] = "/content",
+    cache_dir: Union[str, Path] = "cache",
+    force: bool = False,
+) -> dict:
+    """
+    Preprocess a source TSV and save it as a Parquet cache file.
+
+    The function:
+      1. Validates arguments.
+      2. Skips building if the cache already exists and force=False.
+      3. Reads the source TSV from data_dir.
+      4. Passes the DataFrame through preprocess_dataframe().
+      5. Saves the result as Parquet in cache_dir.
+      6. Returns a status dictionary.
+
+    The original TSV is never modified.  Normalization is performed exactly
+    once per source record by delegating to preprocess_dataframe().
+
+    Args:
+        split:     "train" or "test".
+        source:    "source1", "source2", or "source3".
+        data_dir:  Directory containing the source TSV files.
+                   Defaults to "/content" (Google Colab mount point).
+        cache_dir: Directory in which to write the Parquet file.
+                   Created automatically if it does not exist.
+        force:     If True, rebuild even if the cache file already exists.
+
+    Returns:
+        A dict with keys:
+            split, source, cache_path, tsv_path,
+            status ("built" | "skipped" | "error"),
+            rows (int, or None on skip/error),
+            error (str, or None on success).
+    """
+    _validate_args(split, source)
+
+    tsv   = _tsv_path(split, source, data_dir)
+    cache = _cache_path(split, source, cache_dir)
+
+    result: dict = {
+        "split":      split,
+        "source":     source,
+        "tsv_path":   str(tsv),
+        "cache_path": str(cache),
+        "status":     None,
+        "rows":       None,
+        "error":      None,
+    }
+
+    # Skip if cache already present and not forced.
+    if cache.is_file() and not force:
+        result["status"] = "skipped"
+        return result
+
+    try:
+        # Ensure cache directory exists.
+        cache.parent.mkdir(parents=True, exist_ok=True)
+
+        # Read source TSV.
+        df_raw = pd.read_csv(tsv, sep="\t", dtype=str)
+
+        # Preprocess (normalization happens here — once per record).
+        df_processed = preprocess_dataframe(df_raw)
+
+        # Persist as Parquet.
+        # lists (name_tokens / address_tokens) must be serialised; pyarrow
+        # handles Python lists natively as variable-length list columns.
+        df_processed.to_parquet(cache, index=False)
+
+        result["status"] = "built"
+        result["rows"]   = len(df_processed)
+
+    except Exception as exc:                   # noqa: BLE001
+        result["status"] = "error"
+        result["error"]  = str(exc)
+
+    return result
+
+
+def load_cache(
+    split: str,
+    source: str,
+    cache_dir: Union[str, Path] = "cache",
+) -> pd.DataFrame:
+    """
+    Load a preprocessed source from its Parquet cache file.
+
+    This function never rebuilds the cache.  Call build_cache() first if the
+    cache has not yet been created.
+
+    Args:
+        split:     "train" or "test".
+        source:    "source1", "source2", or "source3".
+        cache_dir: Directory that contains the Parquet files.
+
+    Returns:
+        A DataFrame with the 14 columns produced by preprocess_dataframe().
+
+    Raises:
+        FileNotFoundError: if the expected cache file does not exist.
+        ValueError:        if split or source is invalid.
+    """
+    _validate_args(split, source)
+
+    cache = _cache_path(split, source, cache_dir)
+
+    if not cache.is_file():
+        raise FileNotFoundError(
+            f"Cache file not found: {cache}\n"
+            f"Run build_cache('{split}', '{source}', ...) to create it."
+        )
+
+    return pd.read_parquet(cache)
+
+
+def validate_cache(
+    split: str,
+    source: str,
+    cache_dir: Union[str, Path] = "cache",
+) -> dict:
+    """
+    Validate a Parquet cache file for (split, source).
+
+    Checks (in order):
+      1. File exists on disk.
+      2. Parquet file can be read without error.
+      3. All 14 required columns are present.
+      4. entity_id column is present.
+      5. Raw columns (business_name, business_address, country) are present.
+      6. Normalized columns (name_norm, address_norm) are present.
+      7. No completely-empty DataFrame (at least one row).
+
+    Args:
+        split:     "train" or "test".
+        source:    "source1", "source2", or "source3".
+        cache_dir: Directory that contains the Parquet files.
+
+    Returns:
+        A dict with keys:
+            valid (bool),
+            cache_path (str),
+            rows (int or None),
+            columns (list or None),
+            checks (dict mapping check_name -> bool),
+            missing_columns (list),
+            error (str or None).
+    """
+    _validate_args(split, source)
+
+    cache = _cache_path(split, source, cache_dir)
+
+    checks: dict[str, bool] = {
+        "file_exists":          False,
+        "parquet_readable":     False,
+        "all_14_columns":       False,
+        "entity_id_present":    False,
+        "raw_columns_present":  False,
+        "norm_columns_present": False,
+        "non_empty":            False,
+    }
+
+    result: dict = {
+        "valid":           False,
+        "cache_path":      str(cache),
+        "rows":            None,
+        "columns":         None,
+        "checks":          checks,
+        "missing_columns": [],
+        "error":           None,
+    }
+
+    # 1. File exists
+    checks["file_exists"] = cache.is_file()
+    if not checks["file_exists"]:
+        result["error"] = f"File not found: {cache}"
+        return result
+
+    # 2. Readable
+    try:
+        df = pd.read_parquet(cache)
+        checks["parquet_readable"] = True
+    except Exception as exc:                   # noqa: BLE001
+        result["error"] = f"Cannot read Parquet: {exc}"
+        return result
+
+    cols = set(df.columns)
+    result["rows"]    = len(df)
+    result["columns"] = list(df.columns)
+
+    # 3. All 14 required columns
+    missing = _REQUIRED_COLUMNS - cols
+    result["missing_columns"]   = sorted(missing)
+    checks["all_14_columns"]    = len(missing) == 0
+
+    # 4. entity_id
+    checks["entity_id_present"] = "entity_id" in cols
+
+    # 5. Raw columns
+    checks["raw_columns_present"] = {
+        "business_name", "business_address", "country"
+    }.issubset(cols)
+
+    # 6. Normalized columns
+    checks["norm_columns_present"] = {
+        "name_norm", "address_norm"
+    }.issubset(cols)
+
+    # 7. Non-empty
+    checks["non_empty"] = len(df) > 0
+
+    result["valid"] = all(checks.values())
+    return result
