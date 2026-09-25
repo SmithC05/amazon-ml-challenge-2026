@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 from candidate_generation import generate_candidates_memory_safe
 import pyarrow.parquet as pq
 
