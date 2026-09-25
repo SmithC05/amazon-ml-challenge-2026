@@ -900,7 +900,7 @@ if __name__ == "__main__":
                 {x.strip() for x in str(val).split(",") if x.strip()}
                 if pd.notna(val) and str(val).strip() else set()
             )
-        metrics = evaluate_candidates(official_df, truth_map, len(s2), len(s3))
+        metrics = evaluate_candidates(official_df, truth_map, n_s2, n_s3)
         print("\nCandidate evaluation:")
         print(json.dumps(metrics, indent=2))
 
