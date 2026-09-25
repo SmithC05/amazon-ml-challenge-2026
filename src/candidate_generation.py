@@ -9,7 +9,7 @@ the M3 baseline matcher applies its features and model.
 Design constraints
 ------------------
   • NEVER normalize raw text here.  All text is read from M2 Parquet cache
-    columns: business_name_norm, business_address_norm, country.
+    columns: name_norm, address_norm, country.
   • NEVER compare every S1 row against every S2/S3 row (no O(N²)).
     All blocking uses inverted indices / dictionaries.
   • NEVER make final match decisions.  The ML model (M3) does that.
@@ -57,7 +57,7 @@ Public API
 
 Input DataFrame columns (from M2 cache)
 ----------------------------------------
-  entity_id, business_name_norm, business_address_norm, country
+  entity_id, name_norm, address_norm, country
   (other columns are ignored)
 
 Internal output
@@ -96,17 +96,39 @@ _STOP_TOKENS: frozenset[str] = frozenset(
 # Internal helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _distinctive_tokens(text: str, min_len: int = 4) -> list[str]:
+def _get_tokens(row, col_norm: str, col_tokens: str) -> list[str]:
+    """
+    Extract tokens for a row, preferring the pre-tokenized list from the
+    new M2 cache (col_tokens) when available.  Falls back to splitting the
+    normalized string (col_norm) when the list column is absent or None.
+
+    This makes the blocking functions compatible with both:
+      - new M2 cache (has name_tokens / address_tokens as Python lists)
+      - synthetic DataFrames used in tests / notebooks (only have name_norm)
+    """
+    # Try pre-tokenized list first
+    token_list = row.get(col_tokens) if hasattr(row, 'get') else getattr(row, col_tokens, None)
+    if token_list is not None and isinstance(token_list, (list, tuple)):
+        return [str(t) for t in token_list]
+    # Fall back to splitting the norm string
+    norm = row.get(col_norm) if hasattr(row, 'get') else getattr(row, col_norm, None)
+    norm = str(norm or "")
+    return norm.split()
+
+
+def _distinctive_tokens(text_or_tokens, min_len: int = 4) -> list[str]:
     """Return tokens that are long enough and not stop-words."""
+    tokens = text_or_tokens if isinstance(text_or_tokens, (list, tuple)) else str(text_or_tokens or "").split()
     return [
-        t for t in text.split()
+        t for t in tokens
         if len(t) >= min_len and t not in _STOP_TOKENS
     ]
 
 
-def _numeric_tokens(text: str) -> list[str]:
-    """Return tokens from *text* that contain at least one digit."""
-    return [t for t in text.split() if any(c.isdigit() for c in t)]
+def _numeric_tokens(text_or_tokens) -> list[str]:
+    """Return tokens from *text_or_tokens* that contain at least one digit."""
+    tokens = text_or_tokens if isinstance(text_or_tokens, (list, tuple)) else str(text_or_tokens or "").split()
+    return [t for t in tokens if any(c.isdigit() for c in t)]
 
 
 def _build_inverted_index(df: pd.DataFrame, key_fn) -> dict[str, list[str]]:
@@ -168,7 +190,7 @@ def generate_name_exact_candidates(
 
     Parameters
     ----------
-    s1, rhs : DataFrames with columns entity_id, business_name_norm.
+    s1, rhs : DataFrames with columns entity_id, name_norm.
 
     Returns
     -------
@@ -176,7 +198,7 @@ def generate_name_exact_candidates(
     """
     rhs_index: dict[str, list[str]] = defaultdict(list)
     for _, row in rhs.iterrows():
-        name = str(row["business_name_norm"] or "")
+        name = str(row["name_norm"] or "")
         if name:
             rhs_index[name].append(row["entity_id"])
 
@@ -184,7 +206,7 @@ def generate_name_exact_candidates(
     seen: set[tuple[str, str]] = set()
     for _, row in s1.iterrows():
         s1_id = row["entity_id"]
-        name = str(row["business_name_norm"] or "")
+        name = str(row["name_norm"] or "")
         if not name:
             continue
         for cid in rhs_index.get(name, []):
@@ -214,14 +236,13 @@ def generate_name_candidates(
 
     Parameters
     ----------
-    s1, rhs          : DataFrames with entity_id, business_name_norm.
+    s1, rhs          : DataFrames with entity_id, name_norm.
     min_token_len    : Minimum token length to be considered distinctive.
     """
     # Build RHS index: token → [entity_ids]
     rhs_index: dict[str, list[str]] = defaultdict(list)
     for _, row in rhs.iterrows():
-        name = str(row["business_name_norm"] or "")
-        for tok in _distinctive_tokens(name, min_token_len):
+        for tok in _distinctive_tokens(_get_tokens(row, "name_norm", "name_tokens"), min_token_len):
             rhs_index[tok].append(row["entity_id"])
 
     # Look up each S1 entity
@@ -229,8 +250,7 @@ def generate_name_candidates(
     seen: set[tuple[str, str]] = set()
     for _, row in s1.iterrows():
         s1_id = row["entity_id"]
-        name = str(row["business_name_norm"] or "")
-        for tok in _distinctive_tokens(name, min_token_len):
+        for tok in _distinctive_tokens(_get_tokens(row, "name_norm", "name_tokens"), min_token_len):
             for cid in rhs_index.get(tok, []):
                 p = (s1_id, cid)
                 if p not in seen:
@@ -258,20 +278,18 @@ def generate_address_candidates(
 
     Parameters
     ----------
-    s1, rhs : DataFrames with entity_id, business_address_norm.
+    s1, rhs : DataFrames with entity_id, address_norm.
     """
     rhs_index: dict[str, list[str]] = defaultdict(list)
     for _, row in rhs.iterrows():
-        addr = str(row["business_address_norm"] or "")
-        for tok in _numeric_tokens(addr):
+        for tok in _numeric_tokens(_get_tokens(row, "address_norm", "address_tokens")):
             rhs_index[tok].append(row["entity_id"])
 
     pairs: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for _, row in s1.iterrows():
         s1_id = row["entity_id"]
-        addr = str(row["business_address_norm"] or "")
-        num_toks = _numeric_tokens(addr)
+        num_toks = _numeric_tokens(_get_tokens(row, "address_norm", "address_tokens"))
         if not num_toks:
             continue
         for tok in num_toks:
@@ -302,12 +320,12 @@ def generate_prefix_candidates(
 
     Parameters
     ----------
-    s1, rhs      : DataFrames with entity_id, business_name_norm.
+    s1, rhs      : DataFrames with entity_id, name_norm.
     prefix_len   : Number of leading characters to use as key (default 4).
     """
     rhs_index: dict[str, list[str]] = defaultdict(list)
     for _, row in rhs.iterrows():
-        name = str(row["business_name_norm"] or "")
+        name = str(row["name_norm"] or "")
         prefix = name[:prefix_len]
         if len(prefix) == prefix_len:          # only index if name is long enough
             rhs_index[prefix].append(row["entity_id"])
@@ -316,7 +334,7 @@ def generate_prefix_candidates(
     seen: set[tuple[str, str]] = set()
     for _, row in s1.iterrows():
         s1_id = row["entity_id"]
-        name = str(row["business_name_norm"] or "")
+        name = str(row["name_norm"] or "")
         prefix = name[:prefix_len]
         if len(prefix) < prefix_len:
             continue
@@ -347,7 +365,7 @@ def generate_country_token_candidates(
 
     Parameters
     ----------
-    s1, rhs          : DataFrames with entity_id, business_name_norm, country.
+    s1, rhs          : DataFrames with entity_id, name_norm, country.
     min_token_len    : Minimum token length for distinctive-token selection.
     """
     # Build RHS index: (country, token) → [entity_ids]
@@ -356,8 +374,7 @@ def generate_country_token_candidates(
         ctry = str(row.get("country", "") or "").strip().lower()
         if not ctry:
             continue
-        name = str(row["business_name_norm"] or "")
-        for tok in _distinctive_tokens(name, min_token_len):
+        for tok in _distinctive_tokens(_get_tokens(row, "name_norm", "name_tokens"), min_token_len):
             rhs_index[(ctry, tok)].append(row["entity_id"])
 
     pairs: list[tuple[str, str]] = []
@@ -367,8 +384,7 @@ def generate_country_token_candidates(
         ctry = str(row.get("country", "") or "").strip().lower()
         if not ctry:
             continue
-        name = str(row["business_name_norm"] or "")
-        for tok in _distinctive_tokens(name, min_token_len):
+        for tok in _distinctive_tokens(_get_tokens(row, "name_norm", "name_tokens"), min_token_len):
             for cid in rhs_index.get((ctry, tok), []):
                 p = (s1_id, cid)
                 if p not in seen:
@@ -402,7 +418,7 @@ def generate_fuzzy_candidates(
 
     Parameters
     ----------
-    s1, rhs       : DataFrames with entity_id, business_name_norm.
+    s1, rhs       : DataFrames with entity_id, name_norm.
     prefix_len    : Prefix length for bucket partitioning (default 3).
     score_cutoff  : Minimum token_sort_ratio score (0–100, default 80).
     max_per_s1    : Maximum candidates emitted per S1 entity (default 50).
@@ -416,7 +432,7 @@ def generate_fuzzy_candidates(
     # Build RHS bucket: prefix → [(entity_id, name_norm)]
     rhs_buckets: dict[str, list[tuple[str, str]]] = defaultdict(list)
     for _, row in rhs.iterrows():
-        name = str(row["business_name_norm"] or "")
+        name = str(row["name_norm"] or "")
         prefix = name[:prefix_len]
         if len(prefix) == prefix_len:
             rhs_buckets[prefix].append((row["entity_id"], name))
@@ -425,7 +441,7 @@ def generate_fuzzy_candidates(
     seen: set[tuple[str, str]] = set()
     for _, row in s1.iterrows():
         s1_id = row["entity_id"]
-        name = str(row["business_name_norm"] or "")
+        name = str(row["name_norm"] or "")
         prefix = name[:prefix_len]
         if len(prefix) < prefix_len:
             continue
@@ -462,8 +478,8 @@ def generate_candidates(
     Parameters
     ----------
     s1, s2, s3 : DataFrames loaded from M2 Parquet cache.
-                 Required columns: entity_id, business_name_norm,
-                 business_address_norm, country.
+                 Required columns: entity_id, name_norm,
+                 address_norm, country.
     blocks     : List of block names to run. Defaults to all six blocks:
                  ["exact", "token", "address", "prefix", "country_token", "fuzzy"]
     verbose    : If True, print per-block and total statistics.
@@ -619,10 +635,15 @@ if __name__ == "__main__":
     data_dir  = Path(args.data_dir)
     cache_dir = Path(args.cache_dir)
 
-    if args.build_cache or not cache_exists(cache_dir, args.split):
+    _all_cached = all(
+        cache_exists(args.split, src, cache_dir)
+        for src in ("source1", "source2", "source3")
+    )
+    if args.build_cache or not _all_cached:
         print("Building M2 cache...")
         from cache import build_cache
-        build_cache(data_dir, cache_dir, split=args.split, force=args.build_cache)
+        for src in ("source1", "source2", "source3"):
+            build_cache(args.split, src, data_dir, cache_dir, force=args.build_cache)
 
     print(f"Loading {args.split} cache...")
     s1, s2, s3 = load_all_cache(cache_dir, split=args.split)

@@ -52,7 +52,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from preprocess import normalize_name, normalize_address   # noqa: E402  (M2)
+from preprocess import normalize_name, normalize_address, preprocess_dataframe  # noqa: E402  (M2)
 from features import build_feature_matrix, FEATURE_NAMES  # noqa: E402  (M3)
 from cache import load_all_cache, cache_exists             # noqa: E402  (M2 cache)
 
@@ -94,18 +94,18 @@ def load_sources(
     Load test source TSVs and apply M2 normalization.
     Uses Parquet cache when available; falls back to raw TSV + normalization.
     """
-    if cache_dir is not None and cache_exists(cache_dir, split):   # type: ignore[arg-type]
+    if cache_dir is not None and all(
+        cache_exists(split, src, cache_dir)
+        for src in ("source1", "source2", "source3")
+    ):  # type: ignore[arg-type]
         print(f"  Loading {split} sources from M2 Parquet cache...")
         s1, s2, s3 = load_all_cache(cache_dir, split)              # type: ignore[arg-type]
     else:
         if cache_dir is not None:
             print(f"  Cache not found — falling back to raw TSV + M2 normalization")
-        s1 = pd.read_csv(data_dir / f"{split}_source1.tsv", sep="\t")
-        s2 = pd.read_csv(data_dir / f"{split}_source2.tsv", sep="\t")
-        s3 = pd.read_csv(data_dir / f"{split}_source3.tsv", sep="\t")
-        for df in (s1, s2, s3):
-            df["business_name_norm"]    = df["business_name"].apply(normalize_name)
-            df["business_address_norm"] = df["business_address"].apply(normalize_address)
+        s1 = preprocess_dataframe(pd.read_csv(data_dir / f"{split}_source1.tsv", sep="\t", dtype=str))
+        s2 = preprocess_dataframe(pd.read_csv(data_dir / f"{split}_source2.tsv", sep="\t", dtype=str))
+        s3 = preprocess_dataframe(pd.read_csv(data_dir / f"{split}_source3.tsv", sep="\t", dtype=str))
 
     print(f"Data  S1={len(s1):,}  S2={len(s2):,}  S3={len(s3):,}")
     return s1, s2, s3
@@ -119,26 +119,26 @@ def build_pair_rows(
 ) -> pd.DataFrame:
     """Expand candidate pairs into flat (s1, candidate) rows for scoring."""
     s2_lkp = s2.set_index("entity_id")[
-        ["business_name_norm", "business_address_norm", "country"]
+        ["name_norm", "address_norm", "country"]
     ].rename(columns={
-        "business_name_norm": "cand_name_norm",
-        "business_address_norm": "cand_address_norm",
+        "name_norm": "cand_name_norm",
+        "address_norm": "cand_address_norm",
         "country": "cand_country",
     })
     s3_lkp = s3.set_index("entity_id")[
-        ["business_name_norm", "business_address_norm", "country"]
+        ["name_norm", "address_norm", "country"]
     ].rename(columns={
-        "business_name_norm": "cand_name_norm",
-        "business_address_norm": "cand_address_norm",
+        "name_norm": "cand_name_norm",
+        "address_norm": "cand_address_norm",
         "country": "cand_country",
     })
     cand_lkp = pd.concat([s2_lkp, s3_lkp])
 
     s1_lkp = s1.set_index("entity_id")[
-        ["business_name_norm", "business_address_norm", "country"]
+        ["name_norm", "address_norm", "country"]
     ].rename(columns={
-        "business_name_norm": "s1_name_norm",
-        "business_address_norm": "s1_address_norm",
+        "name_norm": "s1_name_norm",
+        "address_norm": "s1_address_norm",
         "country": "s1_country",
     })
 
