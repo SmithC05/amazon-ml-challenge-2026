@@ -54,6 +54,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from preprocess import normalize_name, normalize_address   # noqa: E402  (M2)
 from features import build_feature_matrix, FEATURE_NAMES  # noqa: E402  (M3)
+from cache import load_all_cache, cache_exists             # noqa: E402  (M2 cache)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -84,17 +85,29 @@ def load_model(model_dir: Path):
     return scaler, model, threshold, config
 
 
-def load_sources(data_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Load test source TSVs and apply M2 normalization."""
-    s1 = pd.read_csv(data_dir / "test_source1.tsv", sep="\t")
-    s2 = pd.read_csv(data_dir / "test_source2.tsv", sep="\t")
-    s3 = pd.read_csv(data_dir / "test_source3.tsv", sep="\t")
+def load_sources(
+    data_dir: Path,
+    cache_dir: Path | None = None,
+    split: str = "test",
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Load test source TSVs and apply M2 normalization.
+    Uses Parquet cache when available; falls back to raw TSV + normalization.
+    """
+    if cache_dir is not None and cache_exists(cache_dir, split):   # type: ignore[arg-type]
+        print(f"  Loading {split} sources from M2 Parquet cache...")
+        s1, s2, s3 = load_all_cache(cache_dir, split)              # type: ignore[arg-type]
+    else:
+        if cache_dir is not None:
+            print(f"  Cache not found — falling back to raw TSV + M2 normalization")
+        s1 = pd.read_csv(data_dir / f"{split}_source1.tsv", sep="\t")
+        s2 = pd.read_csv(data_dir / f"{split}_source2.tsv", sep="\t")
+        s3 = pd.read_csv(data_dir / f"{split}_source3.tsv", sep="\t")
+        for df in (s1, s2, s3):
+            df["business_name_norm"]    = df["business_name"].apply(normalize_name)
+            df["business_address_norm"] = df["business_address"].apply(normalize_address)
 
-    for df in (s1, s2, s3):
-        df["business_name_norm"]    = df["business_name"].apply(normalize_name)
-        df["business_address_norm"] = df["business_address"].apply(normalize_address)
-
-    print(f"Test data  S1={len(s1):,}  S2={len(s2):,}  S3={len(s3):,}")
+    print(f"Data  S1={len(s1):,}  S2={len(s2):,}  S3={len(s3):,}")
     return s1, s2, s3
 
 
@@ -166,6 +179,8 @@ def predict(
     candidates_path: Path,
     model_dir: Path,
     output_dir: Path,
+    cache_dir: Path | None = None,
+    split: str = "test",
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -174,8 +189,8 @@ def predict(
     print(f"Model loaded  — threshold={threshold:.2f}  "
           f"type={config['model_type']}")
 
-    # 2. Load source data
-    s1, s2, s3 = load_sources(data_dir)
+    # 2. Load source data (cache-aware)
+    s1, s2, s3 = load_sources(data_dir, cache_dir=cache_dir, split=split)
     all_s1_ids = s1["entity_id"].tolist()
 
     # 3. Load candidates (M4 artifact)
@@ -233,6 +248,8 @@ if __name__ == "__main__":
     parser.add_argument("--candidates", default="output/candidate_pairs.tsv")
     parser.add_argument("--model-dir",  default="models")
     parser.add_argument("--output-dir", default="output")
+    parser.add_argument("--cache-dir",  default=None, help="M2 Parquet cache directory (optional)")
+    parser.add_argument("--split",      default="test", choices=["train", "test"])
     args = parser.parse_args()
 
     predict(
@@ -240,4 +257,6 @@ if __name__ == "__main__":
         candidates_path=Path(args.candidates),
         model_dir=Path(args.model_dir),
         output_dir=Path(args.output_dir),
+        cache_dir=Path(args.cache_dir) if args.cache_dir else None,
+        split=args.split,
     )

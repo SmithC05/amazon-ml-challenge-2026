@@ -59,6 +59,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from preprocess import normalize_name, normalize_address   # noqa: E402  (M2)
 from features import build_feature_matrix, FEATURE_NAMES  # noqa: E402  (M3)
+from cache import load_all_cache, cache_exists             # noqa: E402  (M2 cache)
 
 RANDOM_STATE = 42
 BETA = 0.5   # F0.5: precision-weighted
@@ -120,17 +121,32 @@ def macro_f05(
 # Data helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_sources(data_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Load and normalize all four training TSVs."""
-    s1 = pd.read_csv(data_dir / "train_source1.tsv", sep="\t")
-    s2 = pd.read_csv(data_dir / "train_source2.tsv", sep="\t")
-    s3 = pd.read_csv(data_dir / "train_source3.tsv", sep="\t")
+def load_sources(
+    data_dir: Path,
+    cache_dir: Path | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Load and normalize all four training TSVs.
+
+    When *cache_dir* is supplied and the M2 Parquet cache is present,
+    source records are loaded from cache (no re-normalization).  Falls back
+    to raw TSV + M2 normalization when cache is absent.
+    """
     gt = pd.read_csv(data_dir / "train_ground_truth.tsv", sep="\t")
 
-    # Apply M2 normalization — never reimplemented here
-    for df in (s1, s2, s3):
-        df["business_name_norm"]    = df["business_name"].apply(normalize_name)
-        df["business_address_norm"] = df["business_address"].apply(normalize_address)
+    if cache_dir is not None and cache_exists(cache_dir, "train"):
+        print("  Loading sources from M2 Parquet cache...")
+        s1, s2, s3 = load_all_cache(cache_dir, "train")
+    else:
+        if cache_dir is not None:
+            print("  Cache not found — falling back to raw TSV + M2 normalization")
+        s1 = pd.read_csv(data_dir / "train_source1.tsv", sep="\t")
+        s2 = pd.read_csv(data_dir / "train_source2.tsv", sep="\t")
+        s3 = pd.read_csv(data_dir / "train_source3.tsv", sep="\t")
+        # Apply M2 normalization — never reimplemented here
+        for df in (s1, s2, s3):
+            df["business_name_norm"]    = df["business_name"].apply(normalize_name)
+            df["business_address_norm"] = df["business_address"].apply(normalize_address)
 
     print(f"Loaded  S1={len(s1):,}  S2={len(s2):,}  S3={len(s3):,}  GT={len(gt):,}")
     return s1, s2, s3, gt
@@ -303,12 +319,18 @@ def threshold_sweep(
 # Main training entry-point
 # ─────────────────────────────────────────────────────────────────────────────
 
-def train(data_dir: Path, candidates_path: Path, output_dir: Path, models_dir: Path) -> None:
+def train(
+    data_dir: Path,
+    candidates_path: Path,
+    output_dir: Path,
+    models_dir: Path,
+    cache_dir: Path | None = None,
+) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     models_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Load data
-    s1, s2, s3, gt = load_sources(data_dir)
+    # 1. Load data (uses cache when available)
+    s1, s2, s3, gt = load_sources(data_dir, cache_dir=cache_dir)
     truth_map = build_truth_map(gt)
 
     # 2. Load candidate pairs (M4 artifact)
@@ -409,6 +431,7 @@ if __name__ == "__main__":
     parser.add_argument("--candidates", default="output/candidate_pairs.tsv", help="M4 candidate pairs TSV")
     parser.add_argument("--output-dir", default="output",  help="Directory for result artifacts")
     parser.add_argument("--models-dir", default="models",  help="Directory for model artifacts")
+    parser.add_argument("--cache-dir",  default=None,      help="M2 Parquet cache directory (optional)")
     args = parser.parse_args()
 
     train(
@@ -416,4 +439,5 @@ if __name__ == "__main__":
         candidates_path=Path(args.candidates),
         output_dir=Path(args.output_dir),
         models_dir=Path(args.models_dir),
+        cache_dir=Path(args.cache_dir) if args.cache_dir else None,
     )
