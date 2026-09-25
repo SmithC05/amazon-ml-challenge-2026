@@ -36,13 +36,12 @@ if __name__ == "__main__":
         (temp_cache_path / "train_source3.parquet").symlink_to(Path(cache_dir) / "train_source3.parquet")
         
         print("Starting memory-safe generation...")
-        internal_df, official_df, n_s1, n_s2, n_s3 = generate_candidates_memory_safe(
+        n_s1, n_s2, n_s3 = generate_candidates_memory_safe(
             split="train",
             cache_dir=temp_cache_path,
+            out_file=out_tsv,
             verbose=True,
             chunk_size=10000
         )
         
-        print(f"Benchmark finished. {len(official_df)} rows in official_df.")
-        official_df.to_csv(out_tsv, sep="\t", index=False)
-        print(f"Saved to {out_tsv}")
+        print(f"Benchmark finished. output saved to {out_tsv}")

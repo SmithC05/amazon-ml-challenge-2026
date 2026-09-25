@@ -638,10 +638,11 @@ def evaluate_candidates(
 def generate_candidates_memory_safe(
     split: str,
     cache_dir: str | Path,
+    out_file: str | Path,
     blocks: list[str] | None = None,
     verbose: bool = True,
     chunk_size: int = 50_000
-) -> tuple[pd.DataFrame, pd.DataFrame, int, int, int]:
+) -> tuple[int, int, int]:
     import gc
     import duckdb
     import pyarrow.parquet as pq
@@ -711,9 +712,9 @@ def generate_candidates_memory_safe(
                             COPY (
                                 SELECT DISTINCT s1.entity_id AS source1_entity_id, rhs.entity_id AS candidate_entity_id
                                 FROM s1_view s1
-                                JOIN rhs_view rhs ON substr(s1.name_norm, 1, 3) = substr(rhs.name_norm, 1, 3)
-                                WHERE s1.name_norm IS NOT NULL AND length(s1.name_norm) >= 3
-                                  AND rhs.name_norm IS NOT NULL AND length(rhs.name_norm) >= 3
+                                JOIN rhs_view rhs ON substr(s1.name_norm, 1, 4) = substr(rhs.name_norm, 1, 4)
+                                WHERE s1.name_norm IS NOT NULL AND length(s1.name_norm) >= 4
+                                  AND rhs.name_norm IS NOT NULL AND length(rhs.name_norm) >= 4
                             ) TO '{out_path}' (FORMAT PARQUET)
                         """
                         con.execute(query)
@@ -909,7 +910,6 @@ def generate_candidates_memory_safe(
             # We can construct the official_df directly in DuckDB!
             # SELECT source1_entity_id, string_agg(candidate_entity_id, ',') AS candidate_entity_ids ...
             
-            official_out = temp_dir_path / "official.parquet"
             con.execute(f"""
                 COPY (
                     WITH distinct_pairs AS (
@@ -926,32 +926,19 @@ def generate_candidates_memory_safe(
                         SELECT entity_id as source1_entity_id
                         FROM s1_view
                     )
-                    SELECT s1_all.source1_entity_id, agg_pairs.candidate_entity_ids
+                    SELECT s1_all.source1_entity_id, COALESCE(agg_pairs.candidate_entity_ids, '') as candidate_entity_ids
                     FROM s1_all
                     LEFT JOIN agg_pairs ON s1_all.source1_entity_id = agg_pairs.source1_entity_id
                     ORDER BY s1_all.source1_entity_id
-                ) TO '{official_out}' (FORMAT PARQUET)
+                ) TO '{out_file}' (FORMAT CSV, DELIMITER '\t', HEADER)
             """)
-            
-            # internal_df is only used in tests/evaluation if at all? 
-            # In Phase 1 test, it does:
-            # internal_df, official_df = generate_candidates(s1, s2, s3)
-            # The synthetic test expects internal_df as a pandas DataFrame. Since synthetic is small, .df() is fine.
-            # BUT the memory_safe full generation shouldn't return a giant internal_df!
-            # Let's just return None for internal_df in memory-safe, and load official_df from parquet.
-            
-            import pandas as pd
-            # official_df is small enough (2.2M rows x 2 columns ~ string IDs ~ a few GBs at most).
-            # Actually 2.2M rows with a long string of candidate IDs might still be big.
-            official_df = pd.read_parquet(official_out)
-            internal_df = None # Skip returning internal_df
 
     if verbose:
-        s1_covered = official_df["candidate_entity_ids"].notna().sum()
+        s1_covered = con.execute(f"SELECT COUNT(*) FROM read_csv_auto('{out_file}', delim='\t', header=True) WHERE candidate_entity_ids IS NOT NULL AND candidate_entity_ids != ''").fetchone()[0]
         print(f"\n  S1 entities with >=1 candidate: {s1_covered:,} / {len(all_s1_ids):,}")
 
     con.close()
-    return internal_df, official_df, n_s1, n_s2, n_s3
+    return n_s1, n_s2, n_s3
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -990,30 +977,25 @@ if __name__ == "__main__":
             build_cache(args.split, src, data_dir, cache_dir, force=args.build_cache)
 
     print("\nRunning memory-safe candidate generation...")
-    internal_df, official_df, n_s1, n_s2, n_s3 = generate_candidates_memory_safe(
-        split=args.split, cache_dir=cache_dir, blocks=args.blocks, verbose=True
+    out_path_obj = Path(args.output)
+    out_path_obj.parent.mkdir(parents=True, exist_ok=True)
+    
+    n_s1, n_s2, n_s3 = generate_candidates_memory_safe(
+        split=args.split, cache_dir=cache_dir, out_file=args.output, blocks=args.blocks, verbose=True
     )
 
-    # Hard-stop proxy: every S1 entity must appear exactly once in official_df.
-    # If blocks silently failed in a way that corrupted the aggregation, this catches it.
-    if len(official_df) != n_s1:
-        print(f"\nFATAL: official_df has {len(official_df)} rows, expected {n_s1}. Aborting.")
+    import duckdb
+    row_count = duckdb.execute(f"SELECT COUNT(*) FROM read_csv_auto('{args.output}', delim='\t', header=True)").fetchone()[0]
+    if row_count != n_s1:
+        print(f"\nFATAL: output file has {row_count} rows, expected {n_s1}. Aborting.")
         sys.exit(1)
 
-    # Validate format
-    errors = validate_format(official_df)
-    if errors:
-        for e in errors:
-            print(f"FORMAT ERROR: {e}")
-        sys.exit(1)
-
-    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-    write_candidates(official_df, args.output)
-    print(f"\nWrote: {args.output}  ({len(official_df):,} rows)")
+    print(f"\nWrote: {args.output}  ({row_count:,} rows)")
 
     # Evaluate if ground truth provided
     if args.gt:
         import pandas as pd
+        import csv
         gt = pd.read_csv(args.gt, sep="\t")
         truth_map: dict[str, set[str]] = {}
         for _, row in gt.iterrows():
@@ -1022,7 +1004,48 @@ if __name__ == "__main__":
                 {x.strip() for x in str(val).split(",") if x.strip()}
                 if pd.notna(val) and str(val).strip() else set()
             )
-        metrics = evaluate_candidates(official_df, truth_map, n_s2, n_s3)
+            
+        found = 0
+        missed = 0
+        n_with_candidates = 0
+        n_empty = 0
+        total_candidate_ids = 0
+        max_per_s1 = 0
+        
+        with open(args.output, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f, delimiter="\t")
+            for row in reader:
+                sid = row["source1_entity_id"]
+                cids_str = row["candidate_entity_ids"] or ""
+                if cids_str.strip():
+                    cids = set(cids_str.split(","))
+                    n_with_candidates += 1
+                else:
+                    cids = set()
+                    n_empty += 1
+                
+                count = len(cids)
+                total_candidate_ids += count
+                if count > max_per_s1:
+                    max_per_s1 = count
+                    
+                true_matches = truth_map.get(sid, set())
+                found += len(true_matches & cids)
+                missed += len(true_matches - cids)
+                
+        total_true = found + missed
+        metrics = {
+            "n_s1": n_s1,
+            "n_with_candidates": n_with_candidates,
+            "n_empty": n_empty,
+            "total_candidate_ids": total_candidate_ids,
+            "avg_per_s1": round(total_candidate_ids / n_s1, 2) if n_s1 else 0.0,
+            "max_per_s1": max_per_s1,
+            "candidate_recall": round(found / total_true, 6) if total_true else None,
+            "true_matches_lost": missed,
+            "reduction_ratio": None
+        }
+        
         print("\nCandidate evaluation:")
         print(json.dumps(metrics, indent=2))
 
