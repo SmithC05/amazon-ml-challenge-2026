@@ -1,0 +1,655 @@
+"""
+src/candidate_generation.py
+============================
+Member 4 deliverable — blocking / candidate generation.
+
+Reduces the S1 × (S2 ∪ S3) cross-product to a tractable candidate set before
+the M3 baseline matcher applies its features and model.
+
+Design constraints
+------------------
+  • NEVER normalize raw text here.  All text is read from M2 Parquet cache
+    columns: business_name_norm, business_address_norm, country.
+  • NEVER compare every S1 row against every S2/S3 row (no O(N²)).
+    All blocking uses inverted indices / dictionaries.
+  • NEVER make final match decisions.  The ML model (M3) does that.
+  • NEVER call M3 train.py, predict.py, or features.py.
+  • Candidate generation for S2 and S3 runs separately, then results are
+    unioned and deduplicated per S1 entity.
+
+Blocking strategies (applied in parallel, results unioned)
+----------------------------------------------------------
+Block 1 — Exact normalized name
+    Inverted index: name_norm → list of entity IDs.
+    Any S1 entity whose normalized name exactly matches any S2/S3 entity
+    is a candidate pair.
+
+Block 2 — Distinctive-token overlap (name)
+    Each entity is indexed by each token in its normalized name.
+    A (S1, S2/S3) pair is a candidate when they share at least one
+    "distinctive" token (≥ 4 characters and not a stop-word).
+    This handles abbreviations and reordering.
+
+Block 3 — Address-number blocking
+    Entities that share at least one numeric token from the normalized
+    address are grouped.  Street numbers are highly selective and rarely
+    coincide by accident.  When neither entity has an address number, this
+    block is skipped for that pair.
+
+Block 4 — First-3-character name prefix (trigram prefix)
+    Fast character-level prefix index: entities with the same 3-char prefix
+    of their normalized name are grouped.  Catches OCR/typo variants where
+    the first few characters are preserved.
+
+Block 5 — Country + name-token
+    For entities with the same country (when country is non-empty), add
+    name-token candidates.  This restricts token blocking to the same
+    geography and reduces false positives.
+
+Public API
+----------
+  generate_name_candidates(s1, rhs, min_token_len)  → internal pairs df
+  generate_address_candidates(s1, rhs)               → internal pairs df
+  generate_prefix_candidates(s1, rhs, prefix_len)   → internal pairs df
+  generate_country_token_candidates(s1, rhs)         → internal pairs df
+  generate_candidates(s1, s2, s3, ...)               → (internal_df, official_df)
+  evaluate_candidates(official_df, truth_map, n_s2, n_s3) → metrics dict
+
+Input DataFrame columns (from M2 cache)
+----------------------------------------
+  entity_id, business_name_norm, business_address_norm, country
+  (other columns are ignored)
+
+Internal output
+---------------
+DataFrame with columns: source1_entity_id, candidate_entity_id
+
+Official output
+---------------
+Produced by src/candidates.py:to_official_format()
+  source1_entity_id, candidate_entity_ids   (one row per S1 entity)
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict
+from typing import Iterable
+
+import pandas as pd
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Constants
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Common business / address stop-words — excluded from token blocking
+_STOP_TOKENS: frozenset[str] = frozenset(
+    "the a an and or of in for to at by co company corporation limited "
+    "private incorporated partnership llp ltd pvt inc corp group holdings "
+    "services solutions enterprise enterprises international global national "
+    "street avenue road drive lane court place highway parkway apartment suite "
+    "avenue boulevard".split()
+)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Internal helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _distinctive_tokens(text: str, min_len: int = 4) -> list[str]:
+    """Return tokens that are long enough and not stop-words."""
+    return [
+        t for t in text.split()
+        if len(t) >= min_len and t not in _STOP_TOKENS
+    ]
+
+
+def _numeric_tokens(text: str) -> list[str]:
+    """Return tokens from *text* that contain at least one digit."""
+    return [t for t in text.split() if any(c.isdigit() for c in t)]
+
+
+def _build_inverted_index(df: pd.DataFrame, key_fn) -> dict[str, list[str]]:
+    """
+    Build {key → [entity_id, ...]} from a DataFrame using *key_fn(row)*.
+    *key_fn* returns a list of keys for each row.
+    """
+    index: dict[str, list[str]] = defaultdict(list)
+    for _, row in df.iterrows():
+        for key in key_fn(row):
+            if key:
+                index[key].append(row["entity_id"])
+    return index
+
+
+def _pairs_from_indices(
+    s1: pd.DataFrame,
+    rhs_index: dict[str, list[str]],
+    key_fn,
+    source_prefix: str,
+) -> list[tuple[str, str]]:
+    """
+    For each S1 entity, look up its keys in *rhs_index* and emit
+    (s1_entity_id, rhs_entity_id) tuples.
+    """
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for _, row in s1.iterrows():
+        s1_id = row["entity_id"]
+        for key in key_fn(row):
+            if not key:
+                continue
+            for cid in rhs_index.get(key, []):
+                pair = (s1_id, cid)
+                if pair not in seen:
+                    seen.add(pair)
+                    pairs.append(pair)
+
+    return pairs
+
+
+def _to_df(pairs: list[tuple[str, str]]) -> pd.DataFrame:
+    if not pairs:
+        return pd.DataFrame(columns=["source1_entity_id", "candidate_entity_id"])
+    return pd.DataFrame(pairs, columns=["source1_entity_id", "candidate_entity_id"])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block 1 — Exact normalized name
+# ─────────────────────────────────────────────────────────────────────────────
+
+def generate_name_exact_candidates(
+    s1: pd.DataFrame,
+    rhs: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Exact normalized business name blocking.
+
+    Parameters
+    ----------
+    s1, rhs : DataFrames with columns entity_id, business_name_norm.
+
+    Returns
+    -------
+    Internal pairs DataFrame.
+    """
+    rhs_index: dict[str, list[str]] = defaultdict(list)
+    for _, row in rhs.iterrows():
+        name = str(row["business_name_norm"] or "")
+        if name:
+            rhs_index[name].append(row["entity_id"])
+
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for _, row in s1.iterrows():
+        s1_id = row["entity_id"]
+        name = str(row["business_name_norm"] or "")
+        if not name:
+            continue
+        for cid in rhs_index.get(name, []):
+            p = (s1_id, cid)
+            if p not in seen:
+                seen.add(p)
+                pairs.append(p)
+
+    return _to_df(pairs)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block 2 — Distinctive name-token overlap
+# ─────────────────────────────────────────────────────────────────────────────
+
+def generate_name_candidates(
+    s1: pd.DataFrame,
+    rhs: pd.DataFrame,
+    min_token_len: int = 4,
+) -> pd.DataFrame:
+    """
+    Distinctive-token blocking on normalized business name.
+
+    Indexes RHS by every distinctive token (len ≥ min_token_len, not a
+    stop-word).  For each S1 entity, emits a candidate pair with any RHS
+    entity that shares at least one such token.
+
+    Parameters
+    ----------
+    s1, rhs          : DataFrames with entity_id, business_name_norm.
+    min_token_len    : Minimum token length to be considered distinctive.
+    """
+    # Build RHS index: token → [entity_ids]
+    rhs_index: dict[str, list[str]] = defaultdict(list)
+    for _, row in rhs.iterrows():
+        name = str(row["business_name_norm"] or "")
+        for tok in _distinctive_tokens(name, min_token_len):
+            rhs_index[tok].append(row["entity_id"])
+
+    # Look up each S1 entity
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for _, row in s1.iterrows():
+        s1_id = row["entity_id"]
+        name = str(row["business_name_norm"] or "")
+        for tok in _distinctive_tokens(name, min_token_len):
+            for cid in rhs_index.get(tok, []):
+                p = (s1_id, cid)
+                if p not in seen:
+                    seen.add(p)
+                    pairs.append(p)
+
+    return _to_df(pairs)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block 3 — Address-number blocking
+# ─────────────────────────────────────────────────────────────────────────────
+
+def generate_address_candidates(
+    s1: pd.DataFrame,
+    rhs: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Address street-number blocking.
+
+    Indexes RHS by numeric tokens in the normalized address.  Street numbers
+    are highly selective; entities sharing a street number are likely
+    co-located.  Pairs where either side has no numeric address tokens are
+    skipped (no false signal from missing addresses).
+
+    Parameters
+    ----------
+    s1, rhs : DataFrames with entity_id, business_address_norm.
+    """
+    rhs_index: dict[str, list[str]] = defaultdict(list)
+    for _, row in rhs.iterrows():
+        addr = str(row["business_address_norm"] or "")
+        for tok in _numeric_tokens(addr):
+            rhs_index[tok].append(row["entity_id"])
+
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for _, row in s1.iterrows():
+        s1_id = row["entity_id"]
+        addr = str(row["business_address_norm"] or "")
+        num_toks = _numeric_tokens(addr)
+        if not num_toks:
+            continue
+        for tok in num_toks:
+            for cid in rhs_index.get(tok, []):
+                p = (s1_id, cid)
+                if p not in seen:
+                    seen.add(p)
+                    pairs.append(p)
+
+    return _to_df(pairs)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block 4 — Name prefix (first N characters)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def generate_prefix_candidates(
+    s1: pd.DataFrame,
+    rhs: pd.DataFrame,
+    prefix_len: int = 4,
+) -> pd.DataFrame:
+    """
+    Character-prefix blocking on normalized business name.
+
+    Entities whose normalized name starts with the same *prefix_len*-character
+    prefix are grouped.  Catches OCR noise, one-character typos at the start,
+    and closely-named businesses.
+
+    Parameters
+    ----------
+    s1, rhs      : DataFrames with entity_id, business_name_norm.
+    prefix_len   : Number of leading characters to use as key (default 4).
+    """
+    rhs_index: dict[str, list[str]] = defaultdict(list)
+    for _, row in rhs.iterrows():
+        name = str(row["business_name_norm"] or "")
+        prefix = name[:prefix_len]
+        if len(prefix) == prefix_len:          # only index if name is long enough
+            rhs_index[prefix].append(row["entity_id"])
+
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for _, row in s1.iterrows():
+        s1_id = row["entity_id"]
+        name = str(row["business_name_norm"] or "")
+        prefix = name[:prefix_len]
+        if len(prefix) < prefix_len:
+            continue
+        for cid in rhs_index.get(prefix, []):
+            p = (s1_id, cid)
+            if p not in seen:
+                seen.add(p)
+                pairs.append(p)
+
+    return _to_df(pairs)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block 5 — Country + distinctive name-token
+# ─────────────────────────────────────────────────────────────────────────────
+
+def generate_country_token_candidates(
+    s1: pd.DataFrame,
+    rhs: pd.DataFrame,
+    min_token_len: int = 4,
+) -> pd.DataFrame:
+    """
+    Country-scoped distinctive-token blocking.
+
+    Only entities with the same non-empty country are compared.  Within each
+    country bucket, the distinctive-token blocking is applied.  This reduces
+    false positives from token blocking across geographies.
+
+    Parameters
+    ----------
+    s1, rhs          : DataFrames with entity_id, business_name_norm, country.
+    min_token_len    : Minimum token length for distinctive-token selection.
+    """
+    # Build RHS index: (country, token) → [entity_ids]
+    rhs_index: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for _, row in rhs.iterrows():
+        ctry = str(row.get("country", "") or "").strip().lower()
+        if not ctry:
+            continue
+        name = str(row["business_name_norm"] or "")
+        for tok in _distinctive_tokens(name, min_token_len):
+            rhs_index[(ctry, tok)].append(row["entity_id"])
+
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for _, row in s1.iterrows():
+        s1_id = row["entity_id"]
+        ctry = str(row.get("country", "") or "").strip().lower()
+        if not ctry:
+            continue
+        name = str(row["business_name_norm"] or "")
+        for tok in _distinctive_tokens(name, min_token_len):
+            for cid in rhs_index.get((ctry, tok), []):
+                p = (s1_id, cid)
+                if p not in seen:
+                    seen.add(p)
+                    pairs.append(p)
+
+    return _to_df(pairs)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block 6 — rapidfuzz token-sort ratio (top-k per S1 bucket)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def generate_fuzzy_candidates(
+    s1: pd.DataFrame,
+    rhs: pd.DataFrame,
+    prefix_len: int = 3,
+    score_cutoff: float = 80.0,
+    max_per_s1: int = 50,
+) -> pd.DataFrame:
+    """
+    Fuzzy name blocking using rapidfuzz token_sort_ratio.
+
+    Within each name-prefix bucket (first *prefix_len* chars), compute
+    token_sort_ratio between S1 and RHS normalized names.  Emit pairs
+    above *score_cutoff*.  Capped at *max_per_s1* per S1 entity to bound
+    volume.
+
+    This catches name-reorder, minor spelling variation, and legal-suffix
+    differences not resolved by normalization.
+
+    Parameters
+    ----------
+    s1, rhs       : DataFrames with entity_id, business_name_norm.
+    prefix_len    : Prefix length for bucket partitioning (default 3).
+    score_cutoff  : Minimum token_sort_ratio score (0–100, default 80).
+    max_per_s1    : Maximum candidates emitted per S1 entity (default 50).
+    """
+    try:
+        from rapidfuzz.fuzz import token_sort_ratio
+    except ImportError:
+        # Graceful degradation — skip fuzzy block if rapidfuzz not installed
+        return pd.DataFrame(columns=["source1_entity_id", "candidate_entity_id"])
+
+    # Build RHS bucket: prefix → [(entity_id, name_norm)]
+    rhs_buckets: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for _, row in rhs.iterrows():
+        name = str(row["business_name_norm"] or "")
+        prefix = name[:prefix_len]
+        if len(prefix) == prefix_len:
+            rhs_buckets[prefix].append((row["entity_id"], name))
+
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for _, row in s1.iterrows():
+        s1_id = row["entity_id"]
+        name = str(row["business_name_norm"] or "")
+        prefix = name[:prefix_len]
+        if len(prefix) < prefix_len:
+            continue
+
+        bucket = rhs_buckets.get(prefix, [])
+        count = 0
+        for cid, cand_name in bucket:
+            if count >= max_per_s1:
+                break
+            if token_sort_ratio(name, cand_name) >= score_cutoff:
+                p = (s1_id, cid)
+                if p not in seen:
+                    seen.add(p)
+                    pairs.append(p)
+                    count += 1
+
+    return _to_df(pairs)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Master generate_candidates()
+# ─────────────────────────────────────────────────────────────────────────────
+
+def generate_candidates(
+    s1: pd.DataFrame,
+    s2: pd.DataFrame,
+    s3: pd.DataFrame,
+    blocks: list[str] | None = None,
+    verbose: bool = True,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Run the full multi-block candidate generation pipeline.
+
+    Parameters
+    ----------
+    s1, s2, s3 : DataFrames loaded from M2 Parquet cache.
+                 Required columns: entity_id, business_name_norm,
+                 business_address_norm, country.
+    blocks     : List of block names to run. Defaults to all six blocks:
+                 ["exact", "token", "address", "prefix", "country_token", "fuzzy"]
+    verbose    : If True, print per-block and total statistics.
+
+    Returns
+    -------
+    (internal_df, official_df)
+      internal_df : row-per-pair DataFrame with columns
+                    [source1_entity_id, candidate_entity_id]
+      official_df : one-row-per-S1 DataFrame (via src/candidates.to_official_format)
+    """
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from candidates import to_official_format
+
+    if blocks is None:
+        blocks = ["exact", "token", "address", "prefix", "country_token", "fuzzy"]
+
+    all_s1_ids = s1["entity_id"].tolist()
+
+    # --- Run each block for S2 and S3 independently, then union ---
+    block_fns = {
+        "exact":         generate_name_exact_candidates,
+        "token":         generate_name_candidates,
+        "address":       generate_address_candidates,
+        "prefix":        generate_prefix_candidates,
+        "country_token": generate_country_token_candidates,
+        "fuzzy":         generate_fuzzy_candidates,
+    }
+
+    all_parts: list[pd.DataFrame] = []
+
+    for block_name in blocks:
+        fn = block_fns.get(block_name)
+        if fn is None:
+            continue
+        for rhs_name, rhs in [("S2", s2), ("S3", s3)]:
+            try:
+                part = fn(s1, rhs)
+                if verbose:
+                    print(f"  Block [{block_name:12s}] × {rhs_name}: {len(part):>8,} pairs")
+                all_parts.append(part)
+            except Exception as exc:
+                print(f"  Block [{block_name}] × {rhs_name} FAILED: {exc}")
+
+    if not all_parts:
+        internal_df = pd.DataFrame(
+            columns=["source1_entity_id", "candidate_entity_id"]
+        )
+    else:
+        raw = pd.concat(all_parts, ignore_index=True)
+        # Deduplicate across blocks
+        internal_df = raw.drop_duplicates(
+            subset=["source1_entity_id", "candidate_entity_id"]
+        ).reset_index(drop=True)
+
+    if verbose:
+        print(f"\n  Total unique pairs (after dedup): {len(internal_df):,}")
+        s1_covered = internal_df["source1_entity_id"].nunique()
+        print(f"  S1 entities with >=1 candidate: {s1_covered:,} / {len(all_s1_ids):,}")
+
+    official_df = to_official_format(internal_df, all_s1_ids=all_s1_ids)
+    return internal_df, official_df
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Evaluation
+# ─────────────────────────────────────────────────────────────────────────────
+
+def evaluate_candidates(
+    official_df: pd.DataFrame,
+    truth_map: dict[str, set[str]],
+    n_s2: int,
+    n_s3: int,
+) -> dict:
+    """
+    Evaluate candidate generation against ground truth.
+
+    Parameters
+    ----------
+    official_df : Output of to_official_format() — one row per S1 entity.
+    truth_map   : {s1_id → set of true matched IDs} from train_ground_truth.tsv.
+    n_s2, n_s3  : Total S2 and S3 entity counts (for reduction ratio).
+
+    Returns
+    -------
+    dict with metrics:
+      n_s1, total_candidate_ids, avg_per_s1, median_per_s1, max_per_s1,
+      n_zero_candidates, cross_product_size, reduction_ratio,
+      candidate_recall, true_matches_found, true_matches_lost
+    """
+    import numpy as np
+
+    counts = official_df["candidate_entity_ids"].apply(
+        lambda x: len(x.split(",")) if isinstance(x, str) and x.strip() else 0
+    )
+
+    n_s1  = len(official_df)
+    total = int(counts.sum())
+    cross = n_s1 * (n_s2 + n_s3)
+    reduction = 1.0 - total / cross if cross > 0 else 0.0
+
+    # Recall
+    found = missed = 0
+    for _, row in official_df.iterrows():
+        sid  = row["source1_entity_id"]
+        raw  = row["candidate_entity_ids"]
+        cids = set(raw.split(",")) if isinstance(raw, str) and raw.strip() else set()
+        true_set = truth_map.get(sid, set())
+        found  += len(true_set & cids)
+        missed += len(true_set - cids)
+
+    total_true = found + missed
+
+    return {
+        "n_s1":               n_s1,
+        "total_candidate_ids": total,
+        "avg_per_s1":         round(float(counts.mean()), 2),
+        "median_per_s1":      float(np.median(counts)),
+        "max_per_s1":         int(counts.max()),
+        "n_zero_candidates":  int((counts == 0).sum()),
+        "cross_product_size": cross,
+        "reduction_ratio":    round(reduction, 6),
+        "true_matches_found": found,
+        "true_matches_lost":  missed,
+        "candidate_recall":   round(found / total_true, 6) if total_true else None,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CLI entry-point
+# ─────────────────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    import argparse, json, sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from cache import load_all_cache, build_cache, cache_exists
+    from candidates import write_candidates, validate_format
+
+    parser = argparse.ArgumentParser(description="M4 candidate generation.")
+    parser.add_argument("--data-dir",   default="dataset/train")
+    parser.add_argument("--cache-dir",  default="cache")
+    parser.add_argument("--output",     default="output/candidate_pairs.tsv")
+    parser.add_argument("--split",      default="train", choices=["train", "test"])
+    parser.add_argument("--gt",         default=None, help="Ground truth TSV for evaluation")
+    parser.add_argument("--blocks",     nargs="+", default=None)
+    parser.add_argument("--build-cache", action="store_true")
+    args = parser.parse_args()
+
+    data_dir  = Path(args.data_dir)
+    cache_dir = Path(args.cache_dir)
+
+    if args.build_cache or not cache_exists(cache_dir, args.split):
+        print("Building M2 cache...")
+        from cache import build_cache
+        build_cache(data_dir, cache_dir, split=args.split, force=args.build_cache)
+
+    print(f"Loading {args.split} cache...")
+    s1, s2, s3 = load_all_cache(cache_dir, split=args.split)
+
+    print("\nRunning candidate generation...")
+    internal_df, official_df = generate_candidates(s1, s2, s3, blocks=args.blocks)
+
+    # Validate format
+    errors = validate_format(official_df)
+    if errors:
+        for e in errors:
+            print(f"FORMAT ERROR: {e}")
+        sys.exit(1)
+
+    write_candidates(official_df, args.output)
+
+    # Evaluate if ground truth provided
+    if args.gt:
+        import pandas as pd
+        gt = pd.read_csv(args.gt, sep="\t")
+        truth_map: dict[str, set[str]] = {}
+        for _, row in gt.iterrows():
+            val = row["matched_entity_ids"]
+            truth_map[row["source1_entity_id"]] = (
+                {x.strip() for x in str(val).split(",") if x.strip()}
+                if pd.notna(val) and str(val).strip() else set()
+            )
+        metrics = evaluate_candidates(official_df, truth_map, len(s2), len(s3))
+        print("\nCandidate evaluation:")
+        print(json.dumps(metrics, indent=2))
