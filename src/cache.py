@@ -14,6 +14,7 @@ Public API
 ----------
     build_cache(split, source, data_dir, cache_dir, force=False)
     load_cache(split, source, cache_dir)
+    load_all_cache(cache_dir, split)
     cache_exists(split, source, cache_dir)
     validate_cache(split, source, cache_dir)
 
@@ -21,6 +22,15 @@ Naming convention
 -----------------
     TSV  :  <data_dir>/<split>_<source>.tsv     e.g.  /content/train_source1.tsv
     Cache:  <cache_dir>/<split>_<source>.parquet e.g.  cache/train_source1.parquet
+
+Cached schema (14 columns)
+--------------------------
+    entity_id, business_name, business_address, country
+    name_norm, address_norm
+    name_tokens, address_tokens
+    name_token_count, address_token_count
+    name_length, address_length
+    name_digits, address_digits
 
 Design principles
 -----------------
@@ -38,9 +48,10 @@ Design principles
 
 from __future__ import annotations
 
-import os
+import argparse
+import time
 from pathlib import Path
-from typing import Union
+from typing import Literal, Union
 
 import pandas as pd
 
@@ -51,11 +62,27 @@ from src.preprocess import preprocess_dataframe, _OUTPUT_COLUMNS
 # Constants
 # ──────────────────────────────────────────────────────────────────────────────
 
+Split  = Literal["train", "test"]
+Source = Literal["source1", "source2", "source3"]
+
 _VALID_SPLITS  = {"train", "test"}
 _VALID_SOURCES = {"source1", "source2", "source3"}
 
 # Exactly the 14 columns that preprocess_dataframe() guarantees.
 _REQUIRED_COLUMNS = set(_OUTPUT_COLUMNS)
+
+_SOURCE_FILES: dict[str, dict[str, str]] = {
+    "train": {
+        "source1": "train_source1.tsv",
+        "source2": "train_source2.tsv",
+        "source3": "train_source3.tsv",
+    },
+    "test": {
+        "source1": "test_source1.tsv",
+        "source2": "test_source2.tsv",
+        "source3": "test_source3.tsv",
+    },
+}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -81,7 +108,7 @@ def _cache_path(split: str, source: str, cache_dir: Union[str, Path]) -> Path:
 
 def _tsv_path(split: str, source: str, data_dir: Union[str, Path]) -> Path:
     """Return the expected TSV file path for (split, source)."""
-    return Path(data_dir) / f"{split}_{source}.tsv"
+    return Path(data_dir) / _SOURCE_FILES[split][source]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -177,9 +204,7 @@ def build_cache(
         df_processed = preprocess_dataframe(df_raw)
 
         # Persist as Parquet.
-        # lists (name_tokens / address_tokens) must be serialised; pyarrow
-        # handles Python lists natively as variable-length list columns.
-        df_processed.to_parquet(cache, index=False)
+        df_processed.to_parquet(cache, index=False, engine="pyarrow", compression="snappy")
 
         result["status"] = "built"
         result["rows"]   = len(df_processed)
@@ -195,6 +220,7 @@ def load_cache(
     split: str,
     source: str,
     cache_dir: Union[str, Path] = "cache",
+    columns: list[str] | None = None,
 ) -> pd.DataFrame:
     """
     Load a preprocessed source from its Parquet cache file.
@@ -206,9 +232,11 @@ def load_cache(
         split:     "train" or "test".
         source:    "source1", "source2", or "source3".
         cache_dir: Directory that contains the Parquet files.
+        columns:   Optional list of column names to load (loads all 14 if None).
 
     Returns:
-        A DataFrame with the 14 columns produced by preprocess_dataframe().
+        A DataFrame with the 14 columns produced by preprocess_dataframe()
+        (or a subset if columns= is specified).
 
     Raises:
         FileNotFoundError: if the expected cache file does not exist.
@@ -224,7 +252,33 @@ def load_cache(
             f"Run build_cache('{split}', '{source}', ...) to create it."
         )
 
-    return pd.read_parquet(cache)
+    t0 = time.perf_counter()
+    df = pd.read_parquet(cache, engine="pyarrow", columns=columns)
+    elapsed = time.perf_counter() - t0
+    print(f"  LOAD  {cache.name}  ({len(df):,} rows, {elapsed:.3f}s)")
+    return df
+
+
+def load_all_cache(
+    cache_dir: Union[str, Path] = "cache",
+    split: str = "train",
+    columns: list[str] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Convenience function: load source1, source2, source3 caches for *split*.
+
+    Args:
+        cache_dir: Directory that contains the Parquet files.
+        split:     "train" or "test".
+        columns:   Optional list of column names to load.
+
+    Returns:
+        (s1, s2, s3) — three DataFrames, one per source.
+    """
+    s1 = load_cache(split, "source1", cache_dir, columns=columns)
+    s2 = load_cache(split, "source2", cache_dir, columns=columns)
+    s3 = load_cache(split, "source3", cache_dir, columns=columns)
+    return s1, s2, s3
 
 
 def validate_cache(
@@ -291,7 +345,7 @@ def validate_cache(
 
     # 2. Readable
     try:
-        df = pd.read_parquet(cache)
+        df = pd.read_parquet(cache, engine="pyarrow")
         checks["parquet_readable"] = True
     except Exception as exc:                   # noqa: BLE001
         result["error"] = f"Cannot read Parquet: {exc}"
@@ -324,3 +378,44 @@ def validate_cache(
 
     result["valid"] = all(checks.values())
     return result
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CLI entry-point
+# ──────────────────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Build the M2 preprocessing cache for one or all sources."
+    )
+    parser.add_argument("--data-dir",  required=True,
+                        help="Directory containing raw TSV files")
+    parser.add_argument("--cache-dir", default="cache",
+                        help="Output directory for Parquet files (default: cache/)")
+    parser.add_argument("--split",     default="train",
+                        choices=["train", "test"],
+                        help="Which split to build (default: train)")
+    parser.add_argument("--source",    default="all",
+                        choices=["source1", "source2", "source3", "all"],
+                        help="Which source to build, or 'all' (default: all)")
+    parser.add_argument("--force",     action="store_true",
+                        help="Overwrite existing cache files")
+    args = parser.parse_args()
+
+    sources = (
+        ["source1", "source2", "source3"]
+        if args.source == "all"
+        else [args.source]
+    )
+
+    print(f"Building cache: split={args.split}  data_dir={args.data_dir}")
+    for src in sources:
+        r = build_cache(
+            split     = args.split,
+            source    = src,
+            data_dir  = args.data_dir,
+            cache_dir = args.cache_dir,
+            force     = args.force,
+        )
+        rows_str = f"{r['rows']:,}" if r["rows"] else "n/a"
+        print(f"  {args.split}_{src}: {r['status']}  rows={rows_str}  {r['error'] or ''}")

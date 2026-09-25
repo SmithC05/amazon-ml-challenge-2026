@@ -1,10 +1,26 @@
-# ── Data / cache ──────────────────────────────────────────────────────────────
-cache/
-*.parquet
+# Amazon ML Challenge 2026 — .gitignore
+
+# ── Datasets (never commit raw data) ─────────────────────────────────────────
+dataset/
 *.tsv
 *.csv
+# Exception: keep stub output files that are tracked deliberately
+!output/.gitkeep
+!output/candidate_pairs.tsv
 
-# ── Python ────────────────────────────────────────────────────────────────────
+# ── M2 Preprocessing cache (rebuilt locally) ─────────────────────────────────
+cache/
+*.parquet
+
+# ── Model artifacts (rebuilt locally or downloaded from Drive) ───────────────
+models/*.pkl
+models/*.bin
+models/*.pt
+models/*.onnx
+# Keep model_config.json tracked (small, important metadata)
+!models/model_config.json
+
+# ── Python ───────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *.pyo
@@ -15,15 +31,25 @@ dist/
 build/
 .eggs/
 
-# ── Jupyter ───────────────────────────────────────────────────────────────────
+# ── Notebooks checkpoints ────────────────────────────────────────────────────
 .ipynb_checkpoints/
 
-# ── Environments ──────────────────────────────────────────────────────────────
-.env
-.venv
+# ── Virtual environments ──────────────────────────────────────────────────────
 venv/
+.venv/
 env/
+.env
 
-# ── OS ────────────────────────────────────────────────────────────────────────
+# ── OS / editor ──────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+*.lnk
+.idea/
+.vscode/
+*.swp
+*~
+
+# ── Secrets ───────────────────────────────────────────────────────────────────
+*.env
+.env.*
+secrets.json

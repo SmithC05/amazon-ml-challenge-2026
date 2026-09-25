@@ -1,4 +1,4 @@
-# Preprocessing Cache
+# Preprocessing Cache — `src/cache.py`
 
 **Amazon ML Challenge 2026 — Preprocessing & Caching Reference**
 
@@ -9,27 +9,38 @@ and the API used by downstream team members to load preprocessed source records.
 
 ## Why Caching Is Needed
 
-Source datasets (S1, S2, S3) must be normalised before any downstream step
-— blocking, candidate generation, feature engineering, or model training — can
-use them.
+| Without cache | With cache |
+|---|---|
+| Each experiment re-normalizes all source records | Normalization runs once, result is saved |
+| `normalize_name` + `normalize_address` called repeatedly per run | Sub-second Parquet column read |
+| Subtle normalization inconsistencies possible across runs | Single canonical normalized form |
 
 Without caching, the normalization pipeline runs on every notebook restart and
-every experiment iteration, repeating identical work on the same records.
-
-**The problem:**
-```
-Experiment A: reads TSV → normalises S1 (all rows) → uses result
-Experiment B: reads TSV → normalises S1 (all rows) → uses result  ← wasted
-Experiment C: reads TSV → normalises S1 (all rows) → uses result  ← wasted
-```
+every experiment iteration, repeating identical work.
 
 **With caching:**
 ```
 Once: reads TSV → normalises S1 → writes Parquet cache
 Experiment A: load_cache("train", "source1") → instant, no normalisation
 Experiment B: load_cache("train", "source1") → instant, no normalisation
-Experiment C: load_cache("train", "source1") → instant, no normalisation
 ```
+
+---
+
+## Architecture
+
+```
+Raw TSVs  (train_source1/2/3.tsv, test_source1/2/3.tsv)
+    │
+    ▼  src/cache.py  ←  src/preprocess.py  (M2 normalization, unchanged)
+Parquet cache  (cache/*.parquet)
+    │
+    ├──▶  M4  (blocking / candidate generation)  — load_cache() only
+    └──▶  M3  (feature extraction + model)        — load_cache() only
+```
+
+**Important:** `preprocess_dataframe()` is called **once per source dataset**,
+not once per candidate pair.  The cache prevents any re-normalisation.
 
 ---
 
@@ -43,26 +54,23 @@ RAW TSV  (e.g. /content/train_source1.tsv)
 RAW DATAFRAME  (entity_id, business_name, business_address, country)
     │
     │  src.preprocess.preprocess_dataframe(df)
-    │  ├─ normalize_name(business_name)    → name_norm
+    │  ├─ normalize_name(business_name)       → name_norm
     │  ├─ normalize_address(business_address) → address_norm
-    │  ├─ name_norm.str.split()            → name_tokens
-    │  ├─ address_norm.str.split()         → address_tokens
-    │  ├─ str.len() / digit count          → length/digit fields
+    │  ├─ name_norm.str.split()               → name_tokens
+    │  ├─ address_norm.str.split()            → address_tokens
+    │  ├─ str.len() / digit count             → length/digit fields
     │  └─ raw columns preserved as-is
     ▼
 PROCESSED DATAFRAME  (14 columns — see schema below)
     │
     │  src.cache.build_cache(...) → df.to_parquet(...)
     ▼
-PARQUET CACHE  (cache/train_source1.parquet)
+PARQUET CACHE  (cache/train_source1.parquet, ...)
     │
     │  src.cache.load_cache(...)  → pd.read_parquet(...)
     ▼
-DOWNSTREAM CONSUMER  (M4 blocking, M3 features, model)
+DOWNSTREAM CONSUMER  (M4 blocking, M3 features/model)
 ```
-
-**Important:** `preprocess_dataframe()` is called **once per source dataset**,
-not once per candidate pair.  The cache prevents any re-normalisation.
 
 ---
 
@@ -80,14 +88,14 @@ cache/
 └── test_source3.parquet
 ```
 
-Ground truth (`train_ground_truth.tsv`) is **not** cached here; it contains
-labels and is consumed directly by the feature-engineering / model notebooks.
+> Cache files are excluded from git via `.gitignore`. Each team member builds
+> their own local cache.
+
+Ground truth (`train_ground_truth.tsv`) is **not** cached here.
 
 ---
 
-## Cached Columns
-
-Every Parquet file contains exactly **14 columns** in this fixed order:
+## Cached Columns (Schema — 14 columns per file)
 
 | # | Column | Type | Description |
 |---|---|---|---|
@@ -117,6 +125,8 @@ Every Parquet file contains exactly **14 columns** in this fixed order:
 
 ## Building the Cache
 
+### Python API
+
 ```python
 from src.cache import build_cache
 
@@ -129,47 +139,50 @@ result = build_cache(
     force     = False,         # True to force rebuild even if cached
 )
 
-print(result)
-# {'split': 'train', 'source': 'source1',
-#  'tsv_path': '/content/train_source1.tsv',
-#  'cache_path': 'cache/train_source1.parquet',
-#  'status': 'built',   # or 'skipped' or 'error'
-#  'rows': 12345,
-#  'error': None}
-
-# Build all six sources in one pass
+# Build all six sources in one loop
 for split in ["train", "test"]:
     for source in ["source1", "source2", "source3"]:
         r = build_cache(split, source, data_dir="/content", cache_dir="cache")
         print(split, source, r["status"], r.get("rows"))
 ```
 
-`build_cache()` returns a status dict rather than raising on missing files, so
-a full-batch build loop can continue even if one source file is absent on the
-current machine.
+### CLI
+
+```bash
+# Build all three train sources
+python src/cache.py --data-dir /content --cache-dir cache --split train --source all
+
+# Force rebuild of one source
+python src/cache.py --data-dir /content --cache-dir cache --split train --source source1 --force
+```
 
 ---
 
 ## Loading the Cache
 
+### Load a single source
+
 ```python
 from src.cache import load_cache
 
-df = load_cache(
-    split     = "train",
-    source    = "source1",
-    cache_dir = "cache",
-)
-
+df = load_cache("train", "source1", cache_dir="cache")
 # df is a DataFrame with 14 columns, shape (N, 14)
-print(df.shape)
-print(df.columns.tolist())
-print(df.head())
 ```
 
-`load_cache()` raises `FileNotFoundError` if the cache has not been built.
-It never rebuilds silently — the caller must explicitly call `build_cache()`
-first.
+### Load all three sources at once
+
+```python
+from src.cache import load_all_cache
+
+s1, s2, s3 = load_all_cache("cache", split="train")
+```
+
+### Load only selected columns (faster)
+
+```python
+df = load_cache("train", "source1", cache_dir="cache",
+                columns=["entity_id", "name_norm", "address_norm"])
+```
 
 ---
 
@@ -187,21 +200,18 @@ else:
     df = load_cache("train", "source1", "cache")
 ```
 
-### Structural validation
+### Structural validation (7 checks)
 
 ```python
 from src.cache import validate_cache
 
 val = validate_cache("train", "source1", cache_dir="cache")
-
-print(val["valid"])          # True / False
-print(val["rows"])           # row count
+print(val["valid"])            # True / False
+print(val["rows"])             # row count
 print(val["missing_columns"])  # [] if all 14 cols present
 for check, ok in val["checks"].items():
     print(check, "PASS" if ok else "FAIL")
 ```
-
-The seven checks performed by `validate_cache()`:
 
 | Check | Description |
 |---|---|
@@ -217,30 +227,42 @@ The seven checks performed by `validate_cache()`:
 
 ## Downstream Usage
 
-The preprocessing cache forms the boundary between the M2 preprocessing
-deliverable and the downstream matching/modeling pipeline:
-
 ```
 M2 (preprocessing):
     RAW TSV → preprocess_dataframe() → PARQUET CACHE
 
 M4 (blocking / candidate generation):
-    load_cache("train", "source1")  →  generate candidates
+    load_cache("train", "source1")  → generate candidates
     load_cache("train", "source2")  ┘
     load_cache("train", "source3")  ┘
 
 M3 (feature engineering + model):
-    load_cache(...)  +  candidates  →  pair features  →  classifier  →  scores
+    load_all_cache("cache", "train")  →  pair features  →  classifier  →  scores
 ```
 
 **Contract for M4 and M3:**
 
-- Always call `load_cache()` — do not re-read or re-normalise the raw TSV.
+- Always call `load_cache()` or `load_all_cache()` — do not re-read or re-normalise the raw TSV.
 - Use `name_norm` / `address_norm` for all string comparisons.
 - Use `name_tokens` / `address_tokens` for set-based similarity (Jaccard, overlap).
-- Use `name_length` / `address_length` / `name_digits` / `address_digits` as
-  numeric features without recomputing them.
+- Use `name_token_count`, `name_length`, `name_digits`, etc. as numeric features directly.
 - Do not modify or overwrite the Parquet files.
+
+---
+
+## Timing Benchmark
+
+Reference timings measured locally on synthetic data (S1=15k, S2=20k, S3=18k rows):
+
+| Operation | Time |
+|---|---|
+| Train cache build (all 3 sources) | ~2.13 s |
+| Test cache build (all 3 sources) | ~2.12 s |
+| Cache load (avg per source) | ~0.059 s |
+| Speedup vs. TSV read + preprocess | **12.19×** |
+
+> Run `notebooks/02_preprocessing_cache.ipynb` on Colab with the real data for
+> production timings.
 
 ---
 
@@ -248,11 +270,6 @@ M3 (feature engineering + model):
 
 The `cache/` directory and all `*.parquet` files are listed in `.gitignore`
 and **must not be committed to GitHub**.
-
-**Reasons:**
-- Source datasets are confidential competition data.
-- Parquet cache files can be gigabytes in size.
-- Each team member rebuilds the cache locally in their Colab environment.
 
 ```gitignore
 cache/
@@ -273,13 +290,22 @@ for split in ["train", "test"]:
 
 ## Normalization Reference
 
-The normalization applied inside `preprocess_dataframe()` is the M2-validated
-pipeline from `src/preprocess.py`.  Refer to `docs/dataset_dictionary.md` for
-the full rule table.  Do not duplicate or override normalization logic in
-downstream notebooks.
+Normalization applied inside `preprocess_dataframe()` is the M2-validated
+pipeline from `src/preprocess.py`. Refer to `docs/dataset_dictionary.md` for
+the full rule table.
 
-| Function | Applied to | Rule set |
+| Function | Applied to | Rules |
 |---|---|---|
 | `normalize_text()` | base pipeline (both fields) | NFKC → lowercase → punctuation → whitespace |
-| `normalize_name()` | `business_name` → `name_norm` | base + legal-suffix rules (pvt→private, ltd→limited, …) |
-| `normalize_address()` | `business_address` → `address_norm` | base + street-type abbreviation rules (ave→avenue, rd→road, …) |
+| `normalize_name()` | `business_name` → `name_norm` | base + legal-suffix rules |
+| `normalize_address()` | `business_address` → `address_norm` | base + street-type abbreviation rules |
+
+---
+
+## Design Constraints
+
+- Normalization is **never reimplemented** in `cache.py`. Only `preprocess.py` functions are called.
+- Raw columns (`business_name`, `business_address`) are preserved unchanged alongside normalized versions.
+- Cache files are `.gitignore`d — never committed to the repo.
+- `pyarrow` + snappy compression are used for fast columnar reads.
+- Country is treated as a free-form string; no fixed country list is assumed.
