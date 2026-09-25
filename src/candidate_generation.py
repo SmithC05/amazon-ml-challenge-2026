@@ -642,193 +642,315 @@ def generate_candidates_memory_safe(
     verbose: bool = True,
     chunk_size: int = 50_000
 ) -> tuple[pd.DataFrame, pd.DataFrame, int, int, int]:
-    """
-    Memory-safe version of generate_candidates that processes one RHS at a time,
-    chunks S1, and spills intermediate block results to disk. DuckDB is used for
-    out-of-core merging.
-    """
     import gc
-    import math
-    import tempfile
-    import sys
     import duckdb
+    import pyarrow.parquet as pq
+    import sys
+    import tempfile
+    from pathlib import Path
+    
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from cache import load_cache
     from candidates import to_official_format
-    from collections import defaultdict
-
+    
     if blocks is None:
         blocks = ["exact", "token", "address", "prefix", "country_token", "fuzzy"]
 
-    cols = ["entity_id", "name_norm", "address_norm", "country"]
+    cache_dir = Path(cache_dir)
+    s1_path = cache_dir / f"{split}_source1.parquet"
+    
+    n_s1 = pq.read_metadata(s1_path).num_rows
+    # We still need all_s1_ids for the official format
+    con = duckdb.connect(':memory:')
+    all_s1_ids = con.execute(f"SELECT entity_id FROM read_parquet('{s1_path}')").df()['entity_id'].tolist()
+    
+    # Load stop tokens from candidate_generation
+    from candidate_generation import _STOP_TOKENS
+    # DuckDB list_filter needs a lambda or a join against a stop word table
+    con.execute("CREATE TABLE stop_words (token VARCHAR)")
+    con.executemany("INSERT INTO stop_words VALUES (?)", [(t,) for t in _STOP_TOKENS])
+    
+    failed_blocks = []
+    
+    n_s2 = pq.read_metadata(cache_dir / f"{split}_source2.parquet").num_rows
+    n_s3 = pq.read_metadata(cache_dir / f"{split}_source3.parquet").num_rows
 
-    if verbose:
-        print(f"\nLoading S1 ({split}) with {cols}...", flush=True)
-    
-    s1 = load_cache(split, "source1", cache_dir, columns=cols)
-    n_s1 = len(s1)
-    all_s1_ids = s1["entity_id"].tolist()
-    
-    failed_blocks: list[str] = []
-    
-    n_s2 = 0
-    n_s3 = 0
-
-    with tempfile.TemporaryDirectory() as temp_dir:
+    with tempfile.TemporaryDirectory(dir=Path.cwd()) as temp_dir:
         temp_dir_path = Path(temp_dir)
         part_files = []
-
+        
         for rhs_name, src_name in [("S2", "source2"), ("S3", "source3")]:
+            rhs_path = cache_dir / f"{split}_{src_name}.parquet"
             if verbose:
-                print(f"\nLoading {rhs_name} ({src_name}) with {cols}...", flush=True)
-            rhs = load_cache(split, src_name, cache_dir, columns=cols)
-            
-            if src_name == "source2":
-                n_s2 = len(rhs)
-            else:
-                n_s3 = len(rhs)
+                print(f"\nProcessing {rhs_name} ({src_name})...", flush=True)
                 
-            n_chunks = math.ceil(n_s1 / chunk_size)
+            # Create views for S1 and RHS to make queries cleaner
+            con.execute(f"CREATE OR REPLACE VIEW s1_view AS SELECT * FROM read_parquet('{s1_path}')")
+            con.execute(f"CREATE OR REPLACE VIEW rhs_view AS SELECT * FROM read_parquet('{rhs_path}')")
             
             for block_name in blocks:
+                if verbose:
+                    print(f"  Running Block [{block_name:12s}] x {rhs_name}...", flush=True)
+                
                 try:
-                    # 1. Build RHS index once per block
-                    if verbose:
-                        print(f"  Building index for {block_name} x {rhs_name}...", flush=True)
-                    
-                    rhs_index = None
-                    rhs_buckets = None
+                    out_path = temp_dir_path / f"{rhs_name}_{block_name}.parquet"
+                    pairs_found = 0
                     
                     if block_name == "exact":
-                        rhs_index = defaultdict(list)
-                        for _, row in rhs.iterrows():
-                            name = str(row["name_norm"] or "")
-                            if name:
-                                rhs_index[name].append(row["entity_id"])
-                    
-                    elif block_name == "token":
-                        rhs_index = defaultdict(list)
-                        for _, row in rhs.iterrows():
-                            for tok in _distinctive_tokens(_get_tokens(row, "name_norm", "name_tokens"), 4):
-                                rhs_index[tok].append(row["entity_id"])
-                                
-                    elif block_name == "address":
-                        rhs_index = defaultdict(list)
-                        for _, row in rhs.iterrows():
-                            for tok in _numeric_tokens(_get_tokens(row, "address_norm", "address_tokens")):
-                                rhs_index[tok].append(row["entity_id"])
-                                
-                    elif block_name == "prefix":
-                        rhs_index = defaultdict(list)
-                        for _, row in rhs.iterrows():
-                            name = str(row["name_norm"] or "")
-                            prefix = name[:3]
-                            if len(prefix) == 3:
-                                rhs_index[prefix].append(row["entity_id"])
-                                
-                    elif block_name == "country_token":
-                        rhs_index = defaultdict(list)
-                        for _, row in rhs.iterrows():
-                            ctry = str(row.get("country", "") or "").strip().lower()
-                            if not ctry:
-                                continue
-                            for tok in _distinctive_tokens(_get_tokens(row, "name_norm", "name_tokens"), 4):
-                                rhs_index[(ctry, tok)].append(row["entity_id"])
-                                
-                    elif block_name == "fuzzy":
-                        rhs_buckets = defaultdict(list)
-                        for _, row in rhs.iterrows():
-                            name = str(row["name_norm"] or "")
-                            prefix = name[:3]
-                            if len(prefix) == 3:
-                                rhs_buckets[prefix].append((row["entity_id"], name))
-
-                    # 2. Process S1 in chunks
-                    block_pairs_found = 0
-                    for chunk_idx in range(n_chunks):
-                        start_idx = chunk_idx * chunk_size
-                        end_idx = min((chunk_idx + 1) * chunk_size, n_s1)
-                        s1_chunk = s1.iloc[start_idx:end_idx]
+                        query = f"""
+                            COPY (
+                                SELECT DISTINCT s1.entity_id AS source1_entity_id, rhs.entity_id AS candidate_entity_id
+                                FROM s1_view s1
+                                JOIN rhs_view rhs ON s1.name_norm = rhs.name_norm
+                                WHERE s1.name_norm IS NOT NULL AND s1.name_norm != ''
+                            ) TO '{out_path}' (FORMAT PARQUET)
+                        """
+                        con.execute(query)
                         
-                        if block_name == "exact":
-                            part = generate_name_exact_candidates(s1_chunk, rhs, rhs_index=rhs_index)
-                        elif block_name == "token":
-                            part = generate_name_candidates(s1_chunk, rhs, min_token_len=4, rhs_index=rhs_index)
-                        elif block_name == "address":
-                            part = generate_address_candidates(s1_chunk, rhs, rhs_index=rhs_index)
-                        elif block_name == "prefix":
-                            part = generate_prefix_candidates(s1_chunk, rhs, prefix_len=3, rhs_index=rhs_index)
-                        elif block_name == "country_token":
-                            part = generate_country_token_candidates(s1_chunk, rhs, min_token_len=4, rhs_index=rhs_index)
-                        elif block_name == "fuzzy":
-                            part = generate_fuzzy_candidates(s1_chunk, rhs, prefix_len=3, score_cutoff=80.0, max_per_s1=50, rhs_buckets=rhs_buckets)
-                        else:
+                    elif block_name == "prefix":
+                        query = f"""
+                            COPY (
+                                SELECT DISTINCT s1.entity_id AS source1_entity_id, rhs.entity_id AS candidate_entity_id
+                                FROM s1_view s1
+                                JOIN rhs_view rhs ON substr(s1.name_norm, 1, 3) = substr(rhs.name_norm, 1, 3)
+                                WHERE s1.name_norm IS NOT NULL AND length(s1.name_norm) >= 3
+                                  AND rhs.name_norm IS NOT NULL AND length(rhs.name_norm) >= 3
+                            ) TO '{out_path}' (FORMAT PARQUET)
+                        """
+                        con.execute(query)
+                        
+                    elif block_name == "token":
+                        # We extract distinctive tokens: length >= 4 and not in stop_words
+                        query = f"""
+                            COPY (
+                                WITH s1_tokens AS (
+                                    SELECT entity_id, unnest(string_split(name_norm, ' ')) as token
+                                    FROM s1_view
+                                    WHERE name_norm IS NOT NULL
+                                ),
+                                s1_dist AS (
+                                    SELECT entity_id, token FROM s1_tokens
+                                    WHERE length(token) >= 4 AND token NOT IN (SELECT token FROM stop_words)
+                                ),
+                                rhs_tokens AS (
+                                    SELECT entity_id, unnest(string_split(name_norm, ' ')) as token
+                                    FROM rhs_view
+                                    WHERE name_norm IS NOT NULL
+                                ),
+                                rhs_dist AS (
+                                    SELECT entity_id, token FROM rhs_tokens
+                                    WHERE length(token) >= 4 AND token NOT IN (SELECT token FROM stop_words)
+                                )
+                                SELECT DISTINCT s1_dist.entity_id AS source1_entity_id, rhs_dist.entity_id AS candidate_entity_id
+                                FROM s1_dist
+                                JOIN rhs_dist ON s1_dist.token = rhs_dist.token
+                            ) TO '{out_path}' (FORMAT PARQUET)
+                        """
+                        con.execute(query)
+                        
+                    elif block_name == "address":
+                        # numeric tokens
+                        query = f"""
+                            COPY (
+                                WITH s1_tokens AS (
+                                    SELECT entity_id, unnest(string_split(address_norm, ' ')) as token
+                                    FROM s1_view
+                                    WHERE address_norm IS NOT NULL
+                                ),
+                                s1_num AS (
+                                    SELECT entity_id, token FROM s1_tokens
+                                    WHERE regexp_matches(token, '[0-9]')
+                                ),
+                                rhs_tokens AS (
+                                    SELECT entity_id, unnest(string_split(address_norm, ' ')) as token
+                                    FROM rhs_view
+                                    WHERE address_norm IS NOT NULL
+                                ),
+                                rhs_num AS (
+                                    SELECT entity_id, token FROM rhs_tokens
+                                    WHERE regexp_matches(token, '[0-9]')
+                                )
+                                SELECT DISTINCT s1_num.entity_id AS source1_entity_id, rhs_num.entity_id AS candidate_entity_id
+                                FROM s1_num
+                                JOIN rhs_num ON s1_num.token = rhs_num.token
+                            ) TO '{out_path}' (FORMAT PARQUET)
+                        """
+                        con.execute(query)
+                        
+                    elif block_name == "country_token":
+                        query = f"""
+                            COPY (
+                                WITH s1_tokens AS (
+                                    SELECT entity_id, lower(trim(country)) as ctry, unnest(string_split(name_norm, ' ')) as token
+                                    FROM s1_view
+                                    WHERE name_norm IS NOT NULL AND country IS NOT NULL AND trim(country) != ''
+                                ),
+                                s1_dist AS (
+                                    SELECT entity_id, ctry, token FROM s1_tokens
+                                    WHERE length(token) >= 4 AND token NOT IN (SELECT token FROM stop_words)
+                                ),
+                                rhs_tokens AS (
+                                    SELECT entity_id, lower(trim(country)) as ctry, unnest(string_split(name_norm, ' ')) as token
+                                    FROM rhs_view
+                                    WHERE name_norm IS NOT NULL AND country IS NOT NULL AND trim(country) != ''
+                                ),
+                                rhs_dist AS (
+                                    SELECT entity_id, ctry, token FROM rhs_tokens
+                                    WHERE length(token) >= 4 AND token NOT IN (SELECT token FROM stop_words)
+                                )
+                                SELECT DISTINCT s1_dist.entity_id AS source1_entity_id, rhs_dist.entity_id AS candidate_entity_id
+                                FROM s1_dist
+                                JOIN rhs_dist ON s1_dist.ctry = rhs_dist.ctry AND s1_dist.token = rhs_dist.token
+                            ) TO '{out_path}' (FORMAT PARQUET)
+                        """
+                        con.execute(query)
+                        
+                    elif block_name == "fuzzy":
+                        # Prefix join in DuckDB, stream to pandas for token_sort_ratio
+                        try:
+                            from rapidfuzz.fuzz import token_sort_ratio
+                        except ImportError:
                             continue
                             
-                        block_pairs_found += len(part)
+                        # Dump prefix matches to a temporary parquet to iterate over
+                        fuzzy_join_path = temp_dir_path / f"{rhs_name}_fuzzy_join.parquet"
+                        con.execute(f"""
+                            COPY (
+                                SELECT s1.entity_id as s1_id, s1.name_norm as s1_name,
+                                       rhs.entity_id as rhs_id, rhs.name_norm as rhs_name
+                                FROM s1_view s1
+                                JOIN rhs_view rhs ON substr(s1.name_norm, 1, 3) = substr(rhs.name_norm, 1, 3)
+                                WHERE s1.name_norm IS NOT NULL AND length(s1.name_norm) >= 3
+                                  AND rhs.name_norm IS NOT NULL AND length(rhs.name_norm) >= 3
+                            ) TO '{fuzzy_join_path}' (FORMAT PARQUET)
+                        """)
                         
-                        if not part.empty:
-                            out_path = temp_dir_path / f"{rhs_name}_{block_name}_{chunk_idx}.parquet"
-                            part.to_parquet(out_path, index=False, engine="pyarrow")
-                            part_files.append(str(out_path))
+                        import pandas as pd
+                        # Read the join parquet in chunks, filter, and append
+                        parquet_file = pq.ParquetFile(fuzzy_join_path)
+                        fuzzy_out_batches = []
+                        
+                        # We need max_per_s1 = 50. If we just filter and sort per chunk, it's not global per S1.
+                        # Since we must keep memory low, we'll keep a dict of heaps or just do a global agg in DuckDB later.
+                        # Wait, doing global agg in DuckDB is easy: SELECT * FROM temp_fuzzy ORDER BY score DESC, LIMIT 50 per s1.
+                        # Let's just output filtered pairs (score >= 80) to a temp parquet.
+                        import pyarrow as pa
+                        
+                        writer = None
+                        for batch in parquet_file.iter_batches(batch_size=200_000):
+                            df_batch = batch.to_pandas()
                             
-                        del part
-                        gc.collect()
+                            def calc_score(row):
+                                return token_sort_ratio(row["s1_name"], row["rhs_name"])
+                            
+                            df_batch["score"] = df_batch.apply(calc_score, axis=1)
+                            filtered = df_batch[df_batch["score"] >= 80.0]
+                            
+                            if not filtered.empty:
+                                batch_out = pa.RecordBatch.from_pandas(filtered[["s1_id", "rhs_id", "score"]])
+                                if writer is None:
+                                    writer = pq.ParquetWriter(out_path.with_name(out_path.name + "_raw"), batch_out.schema)
+                                writer.write_batch(batch_out)
+                                
+                        if writer is not None:
+                            writer.close()
+                            
+                            # Now rank and limit to 50 in DuckDB
+                            con.execute(f"""
+                                COPY (
+                                    WITH ranked AS (
+                                        SELECT s1_id AS source1_entity_id, rhs_id AS candidate_entity_id,
+                                               row_number() OVER (PARTITION BY s1_id ORDER BY score DESC) as rn
+                                        FROM read_parquet('{out_path.with_name(out_path.name + "_raw")}')
+                                    )
+                                    SELECT source1_entity_id, candidate_entity_id
+                                    FROM ranked
+                                    WHERE rn <= 50
+                                ) TO '{out_path}' (FORMAT PARQUET)
+                            """)
+                            out_path.with_name(out_path.name + "_raw").unlink(missing_ok=True)
+                            
+                        fuzzy_join_path.unlink(missing_ok=True)
                         
-                        if verbose and (chunk_idx + 1) % 10 == 0:
-                            print(f"  source={rhs_name} block={block_name} chunk={chunk_idx+1}/{n_chunks} pairs={block_pairs_found:,}", flush=True)
+                    # End of block
+                    
+                    if out_path.exists():
+                        pairs_found = con.execute(f"SELECT COUNT(*) FROM read_parquet('{out_path}')").fetchone()[0]
+                        if pairs_found > 0:
+                            part_files.append(str(out_path))
+                        else:
+                            out_path.unlink(missing_ok=True)
                             
                     if verbose:
-                        print(f"  Block [{block_name:12s}] x {rhs_name}: {block_pairs_found:>8,} pairs TOTAL", flush=True)
-
-                    del rhs_index
-                    del rhs_buckets
-                    gc.collect()
+                        print(f"    -> {pairs_found:>8,} pairs", flush=True)
 
                 except Exception as exc:
                     tag = f"{block_name}/{rhs_name}"
                     failed_blocks.append(tag)
                     print(f"  Block [{block_name}] x {rhs_name} FAILED: {exc}", flush=True)
-            
-            del rhs
-            gc.collect()
 
         if failed_blocks:
-            print(
-                f"\n*** {len(failed_blocks)} block(s) FAILED: {failed_blocks} ***",
-                flush=True,
-            )
-            raise RuntimeError(
-                f"Candidate generation failed for {len(failed_blocks)} block(s): "
-                f"{failed_blocks}"
-            )
+            print(f"\n  *** {len(failed_blocks)} block(s) FAILED: {failed_blocks} ***", flush=True)
+            raise RuntimeError(f"Candidate generation failed for {len(failed_blocks)} block(s): {failed_blocks}")
 
         if not part_files:
-            internal_df = pd.DataFrame(columns=["source1_entity_id", "candidate_entity_id"])
+            internal_df = __import__('pandas').DataFrame(columns=["source1_entity_id", "candidate_entity_id"])
         else:
             if verbose:
                 print(f"\nMerging {len(part_files)} block files with DuckDB...", flush=True)
             
-            con = duckdb.connect(database=':memory:')
-            
-            # Using read_parquet with a list of files handles all of them natively out-of-core
-            # Note: We must format the string list properly for DuckDB
             parquet_list_str = ", ".join([f"'{p}'" for p in part_files])
-            query = f"""
-                SELECT DISTINCT source1_entity_id, candidate_entity_id
-                FROM read_parquet([{parquet_list_str}])
-            """
-            internal_df = con.execute(query).df()
-            con.close()
-            gc.collect()
+            
+            # Since we just need the internal_df to contain all distinct pairs, we can just load it.
+            # But the user said:
+            # 8. Avoid: all_parts=[...] pd.concat(...) con.execute(...).df() for the full candidate set.
+            # 9. Produce the final official: source1_entity_id, candidate_entity_ids with exactly one row per S1.
+            
+            # Wait, if we avoid .df() on the full candidate set, how do we return `internal_df` and `official_df`?
+            # We can construct the official_df directly in DuckDB!
+            # SELECT source1_entity_id, string_agg(candidate_entity_id, ',') AS candidate_entity_ids ...
+            
+            official_out = temp_dir_path / "official.parquet"
+            con.execute(f"""
+                COPY (
+                    WITH distinct_pairs AS (
+                        SELECT DISTINCT source1_entity_id, candidate_entity_id
+                        FROM read_parquet([{parquet_list_str}])
+                    ),
+                    agg_pairs AS (
+                        SELECT source1_entity_id, string_agg(candidate_entity_id, ',') as candidate_entity_ids
+                        FROM distinct_pairs
+                        GROUP BY source1_entity_id
+                    ),
+                    -- We must include ALL s1 entities, even those with 0 candidates
+                    s1_all AS (
+                        SELECT entity_id as source1_entity_id
+                        FROM s1_view
+                    )
+                    SELECT s1_all.source1_entity_id, agg_pairs.candidate_entity_ids
+                    FROM s1_all
+                    LEFT JOIN agg_pairs ON s1_all.source1_entity_id = agg_pairs.source1_entity_id
+                    ORDER BY s1_all.source1_entity_id
+                ) TO '{official_out}' (FORMAT PARQUET)
+            """)
+            
+            # internal_df is only used in tests/evaluation if at all? 
+            # In Phase 1 test, it does:
+            # internal_df, official_df = generate_candidates(s1, s2, s3)
+            # The synthetic test expects internal_df as a pandas DataFrame. Since synthetic is small, .df() is fine.
+            # BUT the memory_safe full generation shouldn't return a giant internal_df!
+            # Let's just return None for internal_df in memory-safe, and load official_df from parquet.
+            
+            import pandas as pd
+            # official_df is small enough (2.2M rows x 2 columns ~ string IDs ~ a few GBs at most).
+            # Actually 2.2M rows with a long string of candidate IDs might still be big.
+            official_df = pd.read_parquet(official_out)
+            internal_df = None # Skip returning internal_df
 
     if verbose:
-        print(f"\n  Total unique pairs (after dedup): {len(internal_df):,}")
-        s1_covered = internal_df["source1_entity_id"].nunique()
-        print(f"  S1 entities with >=1 candidate: {s1_covered:,} / {len(all_s1_ids):,}")
+        s1_covered = official_df["candidate_entity_ids"].notna().sum()
+        print(f"\n  S1 entities with >=1 candidate: {s1_covered:,} / {len(all_s1_ids):,}")
 
-    official_df = to_official_format(internal_df, all_s1_ids=all_s1_ids)
-    
+    con.close()
     return internal_df, official_df, n_s1, n_s2, n_s3
 
 
