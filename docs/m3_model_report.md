@@ -1,148 +1,215 @@
-# Member 3 — Matching Model & Validation Report
+# M3 Baseline Model Report
+## Amazon ML Challenge 2026 — Entity Matching
+
+> **Role boundary:** Member 3 owns the baseline pair matcher, baseline validation, threshold tuning, and the reusable inference wrapper documented here. Preprocessing/normalization is Member 2's deliverable (`src/preprocess.py`). Candidate generation/blocking is Member 4's deliverable (`output/candidate_pairs.tsv`). Advanced model experimentation and final model selection belong to the team lead.
+
+---
 
 ## 1. Responsibility
-Member 3 was responsible for the core matching pipeline, including:
-- positive/negative pair construction (using ground truth for positives)
-- pair-level similarity features
-- baseline matching model (training and tuning)
-- threshold tuning to maximize the evaluation metric
-- Precision / Recall / F0.5 evaluation
-- error analysis
-- inference integration (building the final scoring and thresholding script)
-- output validation (ensuring submission compliance)
 
-## 2. Problem Understanding
-The task is Business Entity Resolution across three data sources:
-- **Source 1** is the reference entity set. Every S1 entity in the test set requires a prediction.
-- **Source 2 and Source 3** contain noisy records that must be matched against Source 1.
-- One S1 entity can match zero, one, or multiple S2/S3 entities.
-- Matching is performed using candidate pairs supplied by the blocking/candidate-generation stage (provided by Member 4).
-- Final predictions are produced per Source 1 entity by retaining candidates that score above a tuned probability threshold.
+| Artifact | Owner |
+|---|---|
+| `src/preprocess.py` | **Member 2** (do not modify) |
+| `output/candidate_pairs.tsv` | **Member 4** |
+| `src/features.py` | Member 3 |
+| `src/train.py` | Member 3 |
+| `src/predict.py` | Member 3 |
+| `models/matcher.pkl` | Member 3 |
+| `models/model_config.json` | Member 3 |
+| `output/baseline_training_results.json` | Member 3 |
+| `output/baseline_threshold_results.tsv` | Member 3 |
+| `notebooks/04_models.ipynb` | Member 3 |
+| Advanced model experiments | Team lead |
 
-## 3. Training Pair Construction
-The baseline pairs used for training (`output/training_pairs_baseline.tsv`) were generated with:
-- **Positives** derived directly from the provided ground truth matches.
-- **Negatives** constructed to challenge the model, including same-country negative sampling where applicable.
-- Cartesian-product generation was avoided to prevent combinatorial explosion and class imbalance.
-- Random seeds were used in the pipeline (e.g. `random_state=42`) to ensure reproducibility.
-The repository artifacts confirm a final dataset of 945,996 pairs (756,687 train pairs and 189,309 validation pairs) derived from 100,000 S1 entities.
+---
 
-## 4. Feature Engineering
-The feature extraction logic is implemented in `src/features.py`. The model relies on exactly 16 pair-level features. Before extraction, text strings undergo normalization: Unicode NFC normalization, lowercase conversion, conversion of non-word characters/punctuation to spaces, and whitespace collapsing. Address missingness is safely handled (producing zeroed similarity when absent).
+## 2. Pipeline Overview
 
-### Name features
-- `name_exact`
-- `name_jaccard`
-- `name_token_overlap`
-- `name_levenshtein_ratio`
-- `name_length_difference`
-- `name_token_count_diff`
-
-### Address features
-- `address_exact`
-- `address_jaccard`
-- `address_token_overlap`
-- `address_levenshtein_ratio`
-- `address_length_difference`
-- `address_token_count_diff`
-- `address_missing`
-
-### Other features
-- `country_match`
-- `source_is_s2`
-- `source_is_s3`
-
-## 5. Baseline Model
-The baseline matching model is implemented in `src/train.py` using `scikit-learn`.
-- Algorithm: **Logistic Regression** (`max_iter=1000`, `random_state=42`)
-- Preprocessing: `StandardScaler` applied in a `Pipeline` before classification.
-- Split strategy: Entity-level train/validation split by **S1 entity** (80/20 split: 80,000 S1 entities for train, 20,000 for validation).
-Splitting by `s1_entity_id` is crucial because it ensures ZERO pair-level overlap across splits; putting the same S1 entity in both train and validation would cause data leakage and artificially inflate validation metrics.
-
-## 6. Evaluation Metric
-The challenge uses a specific entity-level macro-averaged metric:
-**F0.5 = (1.25 × Precision × Recall) / (0.25 × Precision + Recall)**
-
-The F0.5 metric inherently weights Precision twice as heavily as Recall, punishing false positives more severely than false negatives. Evaluation is performed per S1 entity (macro-averaged) across the validation set.
-
-## 7. Threshold Tuning
-A threshold sweep (from 0.50 to 0.95 in 0.05 increments) was conducted to find the optimal cutoff for F0.5. Results are captured in `output/baseline_threshold_results.tsv`.
-
-| Threshold | Precision | Recall | F0.5 |
-|---|---|---|---|
-| 0.50 | 0.997069 | 0.995182 | 0.996691 |
-| 0.55 | 0.997528 | 0.994731 | 0.996967 |
-| 0.60 | 0.997906 | 0.994222 | 0.997167 |
-| 0.65 | 0.998165 | 0.993672 | 0.997263 |
-| 0.70 | 0.998329 | 0.993062 | 0.997272 |
-| **0.75** | **0.998541** | **0.992368** | **0.997300** |
-| 0.80 | 0.998717 | 0.991392 | 0.997243 |
-| 0.85 | 0.998924 | 0.990051 | 0.997136 |
-| 0.90 | 0.999131 | 0.988223 | 0.996930 |
-| 0.95 | 0.999368 | 0.985088 | 0.996479 |
-
-The selected threshold stored in `models/model_config.json` is **0.75**, which yields the highest F0.5 (0.997300).
-
-## 8. Error Analysis
-Based on `output/baseline_training_results.json`, at the 0.75 threshold:
-- **False positives:** 101 pairs
-- **False negatives:** 537 pairs
-Examples show that false positives often involve pairs where address similarity (e.g. `address_levenshtein_ratio` ~0.45-0.59) and length differences confuse the classifier despite low `name_jaccard` (e.g. 0.0 to 0.28). False negatives frequently involve cases with heavily missing addresses (`address_missing` = 1) or completely unaligned text (e.g. `name_jaccard` = 0.0, `address_jaccard` = 0.10) where the model correctly assigns a low probability (e.g. 0.06 to 0.40) to true matches that look completely distinct.
-
-## 9. Inference Pipeline
-The inference script is implemented in `src/predict.py`. It requires `candidate_pairs.tsv` as input and does NOT generate candidates or perform blocking itself.
-
-**Workflow:**
-1. Loads test sources (`test_source1.tsv`, `test_source2.tsv`, `test_source3.tsv`) and `candidate_pairs.tsv`.
-2. Uses `src/features.py` to extract exactly the 16 required features for each candidate pair.
-3. Loads the trained pipeline from `models/matcher.pkl`.
-4. Predicts match probabilities and applies the saved threshold (0.75).
-5. Writes `output/matching_results.tsv`.
-
-**Output Format Rules Enforced:**
-- `source1_entity_id` and `matched_entity_ids` columns.
-- One row per S1 test entity.
-- Comma-separated matched S2/S3 entity IDs.
-- No duplicate matched IDs.
-- Empty string when there are no predicted matches.
-
-## 10. Validation
-Submission validity can be checked via `utils/validate_submission.py`. It confirms that the output formatting rules and candidate consistency are maintained.
-
-```bash
-python3 utils/validate_submission.py \
-  --matching output/matching_results.tsv \
-  --candidate output/candidate_pairs.tsv \
-  --test-dir dataset/test
 ```
-(Final validation against the massive test set requires the test-time `candidate_pairs.tsv` to be generated first).
-
-## 11. Model Artifacts
-- `models/matcher.pkl`: The serialized `scikit-learn` Pipeline containing the `StandardScaler` and `LogisticRegression` model.
-- `models/model_config.json`: Metadata capturing the expected feature names, random seed, threshold (0.75), and validation metrics.
-- `output/baseline_threshold_results.tsv`: TSV file containing the F0.5 threshold sweep results.
-- `output/baseline_training_results.json`: Full training report containing elapsed time, validation split sizes, threshold metrics, and detailed false positive/false negative examples for error analysis.
-
-## 12. Current Status / Remaining Integration
-The Member 3 matching pipeline is fully implemented, verified via local unit and smoke tests, and the final model is trained and saved. However, **final test inference has not yet been completed** because it requires the complete test-set `candidate_pairs.tsv` from the blocking phase (Member 4) to be supplied.
-
-## 13. Reproducibility
-The pipeline can be reproduced using the following commands:
-
-**Training (assuming input data is present in output/):**
-```bash
-python src/train.py
+Raw TSVs  (train_source1/2/3 + train_ground_truth)
+    │
+    ▼  src/preprocess.py  (Member 2)
+Normalized text columns (_norm)
+    │
+    ▼  output/candidate_pairs.tsv  (Member 4)
+Candidate (S1, S2/S3) pairs
+    │
+    ▼  src/features.py  (Member 3)
+16-feature baseline vector per pair
+    │
+    ▼  src/train.py / src/predict.py  (Member 3)
+Baseline Logistic Regression predictions
+    │
+    ▼
+output/matching_results.tsv
 ```
 
-**Prediction (after M4 candidates are ready):**
-```bash
-python src/predict.py
+---
+
+## 3. Normalization (Member 2)
+
+Normalization is **not reimplemented** in this module. The following functions from `src/preprocess.py` are imported and called:
+
+| Function | Applied to |
+|---|---|
+| `normalize_name(value)` | `business_name` → `business_name_norm` |
+| `normalize_address(value)` | `business_address` → `business_address_norm` |
+
+The pipeline applied by M2 is: Unicode NFKC → lowercase → punctuation → whitespace collapse → validated legal-suffix / address-abbreviation token maps.
+
+Raw columns (`business_name`, `business_address`) are never overwritten and are preserved alongside the normalized columns.
+
+---
+
+## 4. Baseline Feature Set
+
+Sixteen deterministic, pair-level features are computed by `src/features.py`.  
+All text inputs are read from the `_norm` columns; raw fields are never used.
+
+### Name similarity (6 features)
+
+| Feature | Description |
+|---|---|
+| `name_exact` | 1 if normalized names are character-for-character identical |
+| `name_jaccard` | Jaccard similarity of character 3-gram sets |
+| `name_token_overlap` | Jaccard similarity of whitespace-token sets |
+| `name_levenshtein_ratio` | 1 − edit_distance / max_length |
+| `name_length_difference` | \|len(a) − len(b)\| / max(len, 1) |
+| `name_token_count_diff` | \|tokens(a) − tokens(b)\| / max(count, 1) |
+
+### Address similarity (7 features)
+
+| Feature | Description |
+|---|---|
+| `address_exact` | 1 if normalized addresses are identical |
+| `address_jaccard` | Jaccard similarity of character 3-gram sets |
+| `address_token_overlap` | Jaccard similarity of token sets |
+| `address_levenshtein_ratio` | Normalized Levenshtein |
+| `address_length_difference` | Relative length difference |
+| `address_token_count_diff` | Relative token-count difference |
+| `address_missing` | 1 if either address normalizes to `""` |
+
+### Other (3 features)
+
+| Feature | Description |
+|---|---|
+| `country_match` | 1 if raw country strings are equal (lowercased, non-empty) |
+| `source_is_s2` | 1 if the candidate entity_id starts with `S2-` |
+| `source_is_s3` | 1 if the candidate entity_id starts with `S3-` |
+
+---
+
+## 5. Baseline Model Architecture
+
+```
+StandardScaler         — zero-mean, unit-variance scaling of the 16 features
+LogisticRegression     — binary classifier; random_state=42, max_iter=1000
 ```
 
-**Validation:**
-```bash
-python3 utils/validate_submission.py \
-  --matching output/matching_results.tsv \
-  --candidate output/candidate_pairs.tsv \
-  --test-dir dataset/test
+- Input: 16-dimensional feature vector (float64)
+- Output: probability of match for each candidate pair
+- Decision: `match` if `P(match) ≥ threshold`
+
+No ensemble, boosting, or deep-learning components are used. Those experiments are reserved for the team lead.
+
+---
+
+## 6. Entity-Level Train / Validation Split
+
+Splitting is performed **by unique S1 entity**, not by row, to prevent data leakage.
+
+| Split | Fraction | random_state |
+|---|---|---|
+| Train | 80 % of labeled S1 entities | 42 |
+| Validation | 20 % of labeled S1 entities | 42 |
+
+The intersection of train and validation S1 IDs is verified to be empty at runtime.
+
+---
+
+## 7. Official Metric: Entity-Level Macro F0.5
+
+The competition scores submissions on **entity-level macro F0.5**.  
+This is computed as follows for **each** labeled S1 entity:
+
 ```
+truth     = set of true matched IDs for that S1 entity
+predicted = set of candidate IDs predicted as matches at threshold t
+
+Case 1: truth = {} AND predicted = {}   → entity_f0.5 = 1.0
+Case 2: truth = {} AND predicted ≠ {}   → entity_f0.5 = 0.0
+Case 3: otherwise
+    precision = |truth ∩ predicted| / |predicted|  (0 if predicted empty)
+    recall    = |truth ∩ predicted| / |truth|
+    entity_f0.5 = (1 + 0.5²) · P · R / (0.5² · P + R)   if P + R > 0
+                = 0                                         otherwise
+
+Final score = mean(entity_f0.5)  across all validation S1 entities
+```
+
+> **Important:** do NOT compute F0.5 from a single global precision and recall. Each entity contributes one F0.5 score to the macro average.
+
+---
+
+## 8. Threshold Sweep
+
+The decision threshold is not hard-coded. A sweep over `[0.50, 0.55, …, 0.95]` is run on the validation set and the threshold maximizing the entity-level macro F0.5 is selected and saved to `models/model_config.json`.
+
+Results are saved in full to `output/baseline_threshold_results.tsv`.
+
+---
+
+## 9. Baseline Validation Results
+
+*(To be filled after first full run with M4's candidate pairs.)*
+
+| Metric | Value |
+|---|---|
+| Selected threshold | TBD |
+| Validation Precision (avg per-entity) | TBD |
+| Validation Recall (avg per-entity) | TBD |
+| **Validation entity-level macro F0.5** | **TBD** |
+| Train S1 entities | TBD |
+| Validation S1 entities | TBD |
+| Train pairs | TBD |
+| Validation pairs | TBD |
+
+---
+
+## 10. Error Analysis Observations
+
+*(To be completed after first run. Guidance for what to look at:)*
+
+**False positives** (predicted match, wrong):
+- Common when business names are similar but addresses differ (e.g., chain stores in the same city).
+- `address_missing = 1` pairs are higher-risk — address cannot disambiguate.
+
+**False negatives** (missed match):
+- Entities with large name surface variation (abbreviation, language, transliteration) have low `name_jaccard` and `name_levenshtein_ratio` — the baseline cannot recover these.
+- These motivate M4's semantic/fuzzy candidate generation and future model experiments.
+
+---
+
+## 11. Inference Interface
+
+```bash
+# After training:
+python src/predict.py \
+    --data-dir  dataset/test \
+    --candidates output/candidate_pairs.tsv \
+    --model-dir  models \
+    --output-dir output
+```
+
+Produces `output/matching_results.tsv`:
+- One row per test S1 entity.
+- `matched_entity_ids` is empty for entities with no predicted match.
+- Format is tab-separated, UTF-8 — compatible with `utils/validate_submission.py`.
+
+---
+
+## 12. What This Baseline Is Not
+
+- This is **not** the final competition model.
+- XGBoost, CatBoost, deep learning, and ensemble experiments belong to the team lead.
+- This baseline establishes the reference F0.5 score that all future experiments must beat.
