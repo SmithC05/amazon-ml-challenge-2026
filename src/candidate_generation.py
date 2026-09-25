@@ -623,6 +623,123 @@ def evaluate_candidates(
     }
 
 
+
+
+def generate_candidates_memory_safe(
+    split: str,
+    cache_dir: str | Path,
+    blocks: list[str] | None = None,
+    verbose: bool = True,
+) -> tuple[pd.DataFrame, pd.DataFrame, int, int, int]:
+    """
+    Memory-safe version of generate_candidates that processes one RHS at a time,
+    loads only required columns, and spills intermediate block results to disk.
+    """
+    import gc
+    import tempfile
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from cache import load_cache
+    from candidates import to_official_format
+
+    if blocks is None:
+        blocks = ["exact", "token", "address", "prefix", "country_token", "fuzzy"]
+
+    block_fns = {
+        "exact":         generate_name_exact_candidates,
+        "token":         generate_name_candidates,
+        "address":       generate_address_candidates,
+        "prefix":        generate_prefix_candidates,
+        "country_token": generate_country_token_candidates,
+        "fuzzy":         generate_fuzzy_candidates,
+    }
+
+    cols = ["entity_id", "name_norm", "address_norm", "country"]
+
+    if verbose:
+        print(f"\nLoading S1 ({split}) with {cols}...", flush=True)
+    
+    s1 = load_cache(split, "source1", cache_dir, columns=cols)
+    n_s1 = len(s1)
+    all_s1_ids = s1["entity_id"].tolist()
+    
+    failed_blocks: list[str] = []
+    
+    n_s2 = 0
+    n_s3 = 0
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_dir_path = Path(temp_dir)
+        part_files = []
+
+        for rhs_name, src_name in [("S2", "source2"), ("S3", "source3")]:
+            if verbose:
+                print(f"\nLoading {rhs_name} ({src_name}) with {cols}...", flush=True)
+            rhs = load_cache(split, src_name, cache_dir, columns=cols)
+            
+            if src_name == "source2":
+                n_s2 = len(rhs)
+            else:
+                n_s3 = len(rhs)
+                
+            for block_name in blocks:
+                fn = block_fns.get(block_name)
+                if fn is None:
+                    continue
+                try:
+                    part = fn(s1, rhs)
+                    if verbose:
+                        print(f"  Block [{block_name:12s}] x {rhs_name}: {len(part):>8,} pairs", flush=True)
+                    if not part.empty:
+                        out_path = temp_dir_path / f"{rhs_name}_{block_name}.parquet"
+                        part.to_parquet(out_path, index=False, engine="pyarrow")
+                        part_files.append(out_path)
+                    del part
+                    gc.collect()
+                except Exception as exc:
+                    tag = f"{block_name}/{rhs_name}"
+                    failed_blocks.append(tag)
+                    print(f"  Block [{block_name}] x {rhs_name} FAILED: {exc}", flush=True)
+            
+            del rhs
+            gc.collect()
+
+        if failed_blocks:
+            print(
+                f"\n  *** {len(failed_blocks)} block(s) FAILED: {failed_blocks} ***",
+                flush=True,
+            )
+            raise RuntimeError(
+                f"Candidate generation failed for {len(failed_blocks)} block(s): "
+                f"{failed_blocks}"
+            )
+
+        if not part_files:
+            internal_df = pd.DataFrame(columns=["source1_entity_id", "candidate_entity_id"])
+        else:
+            if verbose:
+                print(f"\nMerging {len(part_files)} block files...", flush=True)
+            all_parts = [pd.read_parquet(p) for p in part_files]
+            raw = pd.concat(all_parts, ignore_index=True)
+            del all_parts
+            gc.collect()
+            
+            internal_df = raw.drop_duplicates(
+                subset=["source1_entity_id", "candidate_entity_id"]
+            ).reset_index(drop=True)
+            del raw
+            gc.collect()
+
+    if verbose:
+        print(f"\n  Total unique pairs (after dedup): {len(internal_df):,}")
+        s1_covered = internal_df["source1_entity_id"].nunique()
+        print(f"  S1 entities with >=1 candidate: {s1_covered:,} / {len(all_s1_ids):,}")
+
+    official_df = to_official_format(internal_df, all_s1_ids=all_s1_ids)
+    
+    return internal_df, official_df, n_s1, n_s2, n_s3
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CLI entry-point
 # ─────────────────────────────────────────────────────────────────────────────
@@ -658,12 +775,10 @@ if __name__ == "__main__":
         for src in ("source1", "source2", "source3"):
             build_cache(args.split, src, data_dir, cache_dir, force=args.build_cache)
 
-    print(f"Loading {args.split} cache...")
-    s1, s2, s3 = load_all_cache(cache_dir, split=args.split)
-    n_s1 = len(s1)
-
-    print("\nRunning candidate generation...")
-    internal_df, official_df = generate_candidates(s1, s2, s3, blocks=args.blocks, verbose=True)
+    print("\nRunning memory-safe candidate generation...")
+    internal_df, official_df, n_s1, n_s2, n_s3 = generate_candidates_memory_safe(
+        split=args.split, cache_dir=cache_dir, blocks=args.blocks, verbose=True
+    )
 
     # Hard-stop proxy: every S1 entity must appear exactly once in official_df.
     # If blocks silently failed in a way that corrupted the aggregation, this catches it.
