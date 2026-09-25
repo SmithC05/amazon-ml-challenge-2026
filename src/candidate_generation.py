@@ -512,6 +512,7 @@ def generate_candidates(
     }
 
     all_parts: list[pd.DataFrame] = []
+    failed_blocks: list[str] = []
 
     for block_name in blocks:
         fn = block_fns.get(block_name)
@@ -521,10 +522,15 @@ def generate_candidates(
             try:
                 part = fn(s1, rhs)
                 if verbose:
-                    print(f"  Block [{block_name:12s}] × {rhs_name}: {len(part):>8,} pairs")
+                    print(f"  Block [{block_name:12s}] x {rhs_name}: {len(part):>8,} pairs")
                 all_parts.append(part)
             except Exception as exc:
-                print(f"  Block [{block_name}] × {rhs_name} FAILED: {exc}")
+                tag = f"{block_name}/{rhs_name}"
+                failed_blocks.append(tag)
+                print(f"  Block [{block_name}] x {rhs_name} FAILED: {exc}", flush=True)
+
+    if failed_blocks:
+        print(f"\n  *** {len(failed_blocks)} block(s) FAILED: {failed_blocks} ***")
 
     if not all_parts:
         internal_df = pd.DataFrame(
@@ -647,9 +653,16 @@ if __name__ == "__main__":
 
     print(f"Loading {args.split} cache...")
     s1, s2, s3 = load_all_cache(cache_dir, split=args.split)
+    n_s1 = len(s1)
 
     print("\nRunning candidate generation...")
-    internal_df, official_df = generate_candidates(s1, s2, s3, blocks=args.blocks)
+    internal_df, official_df = generate_candidates(s1, s2, s3, blocks=args.blocks, verbose=True)
+
+    # Hard-stop proxy: every S1 entity must appear exactly once in official_df.
+    # If blocks silently failed in a way that corrupted the aggregation, this catches it.
+    if len(official_df) != n_s1:
+        print(f"\nFATAL: official_df has {len(official_df)} rows, expected {n_s1}. Aborting.")
+        sys.exit(1)
 
     # Validate format
     errors = validate_format(official_df)
@@ -658,7 +671,9 @@ if __name__ == "__main__":
             print(f"FORMAT ERROR: {e}")
         sys.exit(1)
 
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     write_candidates(official_df, args.output)
+    print(f"\nWrote: {args.output}  ({len(official_df):,} rows)")
 
     # Evaluate if ground truth provided
     if args.gt:
@@ -674,3 +689,10 @@ if __name__ == "__main__":
         metrics = evaluate_candidates(official_df, truth_map, len(s2), len(s3))
         print("\nCandidate evaluation:")
         print(json.dumps(metrics, indent=2))
+
+        # Save stats alongside output file
+        stats_path = str(Path(args.output).with_suffix(".stats.json"))
+        with open(stats_path, "w") as f:
+            json.dump(metrics, f, indent=2)
+        print(f"Stats  : {stats_path}")
+
