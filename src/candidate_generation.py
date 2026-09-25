@@ -184,6 +184,7 @@ def _to_df(pairs: list[tuple[str, str]]) -> pd.DataFrame:
 def generate_name_exact_candidates(
     s1: pd.DataFrame,
     rhs: pd.DataFrame,
+    rhs_index: dict | None = None,
 ) -> pd.DataFrame:
     """
     Exact normalized business name blocking.
@@ -196,11 +197,12 @@ def generate_name_exact_candidates(
     -------
     Internal pairs DataFrame.
     """
-    rhs_index: dict[str, list[str]] = defaultdict(list)
-    for _, row in rhs.iterrows():
-        name = str(row["name_norm"] or "")
-        if name:
-            rhs_index[name].append(row["entity_id"])
+    if rhs_index is None:
+        rhs_index = defaultdict(list)
+        for _, row in rhs.iterrows():
+            name = str(row["name_norm"] or "")
+            if name:
+                rhs_index[name].append(row["entity_id"])
 
     pairs: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
@@ -226,6 +228,7 @@ def generate_name_candidates(
     s1: pd.DataFrame,
     rhs: pd.DataFrame,
     min_token_len: int = 4,
+    rhs_index: dict | None = None,
 ) -> pd.DataFrame:
     """
     Distinctive-token blocking on normalized business name.
@@ -240,10 +243,11 @@ def generate_name_candidates(
     min_token_len    : Minimum token length to be considered distinctive.
     """
     # Build RHS index: token → [entity_ids]
-    rhs_index: dict[str, list[str]] = defaultdict(list)
-    for _, row in rhs.iterrows():
-        for tok in _distinctive_tokens(_get_tokens(row, "name_norm", "name_tokens"), min_token_len):
-            rhs_index[tok].append(row["entity_id"])
+    if rhs_index is None:
+        rhs_index = defaultdict(list)
+        for _, row in rhs.iterrows():
+            for tok in _distinctive_tokens(_get_tokens(row, "name_norm", "name_tokens"), min_token_len):
+                rhs_index[tok].append(row["entity_id"])
 
     # Look up each S1 entity
     pairs: list[tuple[str, str]] = []
@@ -267,6 +271,7 @@ def generate_name_candidates(
 def generate_address_candidates(
     s1: pd.DataFrame,
     rhs: pd.DataFrame,
+    rhs_index: dict | None = None,
 ) -> pd.DataFrame:
     """
     Address street-number blocking.
@@ -280,10 +285,11 @@ def generate_address_candidates(
     ----------
     s1, rhs : DataFrames with entity_id, address_norm.
     """
-    rhs_index: dict[str, list[str]] = defaultdict(list)
-    for _, row in rhs.iterrows():
-        for tok in _numeric_tokens(_get_tokens(row, "address_norm", "address_tokens")):
-            rhs_index[tok].append(row["entity_id"])
+    if rhs_index is None:
+        rhs_index = defaultdict(list)
+        for _, row in rhs.iterrows():
+            for tok in _numeric_tokens(_get_tokens(row, "address_norm", "address_tokens")):
+                rhs_index[tok].append(row["entity_id"])
 
     pairs: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
@@ -355,6 +361,7 @@ def generate_country_token_candidates(
     s1: pd.DataFrame,
     rhs: pd.DataFrame,
     min_token_len: int = 4,
+    rhs_index: dict | None = None,
 ) -> pd.DataFrame:
     """
     Country-scoped distinctive-token blocking.
@@ -369,13 +376,14 @@ def generate_country_token_candidates(
     min_token_len    : Minimum token length for distinctive-token selection.
     """
     # Build RHS index: (country, token) → [entity_ids]
-    rhs_index: dict[tuple[str, str], list[str]] = defaultdict(list)
-    for _, row in rhs.iterrows():
-        ctry = str(row.get("country", "") or "").strip().lower()
-        if not ctry:
-            continue
-        for tok in _distinctive_tokens(_get_tokens(row, "name_norm", "name_tokens"), min_token_len):
-            rhs_index[(ctry, tok)].append(row["entity_id"])
+    if rhs_index is None:
+        rhs_index = defaultdict(list)
+        for _, row in rhs.iterrows():
+            ctry = str(row.get("country", "") or "").strip().lower()
+            if not ctry:
+                continue
+            for tok in _distinctive_tokens(_get_tokens(row, "name_norm", "name_tokens"), min_token_len):
+                rhs_index[(ctry, tok)].append(row["entity_id"])
 
     pairs: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
@@ -404,6 +412,7 @@ def generate_fuzzy_candidates(
     prefix_len: int = 3,
     score_cutoff: float = 80.0,
     max_per_s1: int = 50,
+    rhs_buckets: dict | None = None,
 ) -> pd.DataFrame:
     """
     Fuzzy name blocking using rapidfuzz token_sort_ratio.
@@ -430,12 +439,13 @@ def generate_fuzzy_candidates(
         return pd.DataFrame(columns=["source1_entity_id", "candidate_entity_id"])
 
     # Build RHS bucket: prefix → [(entity_id, name_norm)]
-    rhs_buckets: dict[str, list[tuple[str, str]]] = defaultdict(list)
-    for _, row in rhs.iterrows():
-        name = str(row["name_norm"] or "")
-        prefix = name[:prefix_len]
-        if len(prefix) == prefix_len:
-            rhs_buckets[prefix].append((row["entity_id"], name))
+    if rhs_buckets is None:
+        rhs_buckets = defaultdict(list)
+        for _, row in rhs.iterrows():
+            name = str(row["name_norm"] or "")
+            prefix = name[:prefix_len]
+            if len(prefix) == prefix_len:
+                rhs_buckets[prefix].append((row["entity_id"], name))
 
     pairs: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
@@ -630,29 +640,25 @@ def generate_candidates_memory_safe(
     cache_dir: str | Path,
     blocks: list[str] | None = None,
     verbose: bool = True,
+    chunk_size: int = 50_000
 ) -> tuple[pd.DataFrame, pd.DataFrame, int, int, int]:
     """
     Memory-safe version of generate_candidates that processes one RHS at a time,
-    loads only required columns, and spills intermediate block results to disk.
+    chunks S1, and spills intermediate block results to disk. DuckDB is used for
+    out-of-core merging.
     """
     import gc
+    import math
     import tempfile
     import sys
+    import duckdb
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from cache import load_cache
     from candidates import to_official_format
+    from collections import defaultdict
 
     if blocks is None:
         blocks = ["exact", "token", "address", "prefix", "country_token", "fuzzy"]
-
-    block_fns = {
-        "exact":         generate_name_exact_candidates,
-        "token":         generate_name_candidates,
-        "address":       generate_address_candidates,
-        "prefix":        generate_prefix_candidates,
-        "country_token": generate_country_token_candidates,
-        "fuzzy":         generate_fuzzy_candidates,
-    }
 
     cols = ["entity_id", "name_norm", "address_norm", "country"]
 
@@ -682,20 +688,103 @@ def generate_candidates_memory_safe(
             else:
                 n_s3 = len(rhs)
                 
+            n_chunks = math.ceil(n_s1 / chunk_size)
+            
             for block_name in blocks:
-                fn = block_fns.get(block_name)
-                if fn is None:
-                    continue
                 try:
-                    part = fn(s1, rhs)
+                    # 1. Build RHS index once per block
                     if verbose:
-                        print(f"  Block [{block_name:12s}] x {rhs_name}: {len(part):>8,} pairs", flush=True)
-                    if not part.empty:
-                        out_path = temp_dir_path / f"{rhs_name}_{block_name}.parquet"
-                        part.to_parquet(out_path, index=False, engine="pyarrow")
-                        part_files.append(out_path)
-                    del part
+                        print(f"  Building index for {block_name} x {rhs_name}...", flush=True)
+                    
+                    rhs_index = None
+                    rhs_buckets = None
+                    
+                    if block_name == "exact":
+                        rhs_index = defaultdict(list)
+                        for _, row in rhs.iterrows():
+                            name = str(row["name_norm"] or "")
+                            if name:
+                                rhs_index[name].append(row["entity_id"])
+                    
+                    elif block_name == "token":
+                        rhs_index = defaultdict(list)
+                        for _, row in rhs.iterrows():
+                            for tok in _distinctive_tokens(_get_tokens(row, "name_norm", "name_tokens"), 4):
+                                rhs_index[tok].append(row["entity_id"])
+                                
+                    elif block_name == "address":
+                        rhs_index = defaultdict(list)
+                        for _, row in rhs.iterrows():
+                            for tok in _numeric_tokens(_get_tokens(row, "address_norm", "address_tokens")):
+                                rhs_index[tok].append(row["entity_id"])
+                                
+                    elif block_name == "prefix":
+                        rhs_index = defaultdict(list)
+                        for _, row in rhs.iterrows():
+                            name = str(row["name_norm"] or "")
+                            prefix = name[:3]
+                            if len(prefix) == 3:
+                                rhs_index[prefix].append(row["entity_id"])
+                                
+                    elif block_name == "country_token":
+                        rhs_index = defaultdict(list)
+                        for _, row in rhs.iterrows():
+                            ctry = str(row.get("country", "") or "").strip().lower()
+                            if not ctry:
+                                continue
+                            for tok in _distinctive_tokens(_get_tokens(row, "name_norm", "name_tokens"), 4):
+                                rhs_index[(ctry, tok)].append(row["entity_id"])
+                                
+                    elif block_name == "fuzzy":
+                        rhs_buckets = defaultdict(list)
+                        for _, row in rhs.iterrows():
+                            name = str(row["name_norm"] or "")
+                            prefix = name[:3]
+                            if len(prefix) == 3:
+                                rhs_buckets[prefix].append((row["entity_id"], name))
+
+                    # 2. Process S1 in chunks
+                    block_pairs_found = 0
+                    for chunk_idx in range(n_chunks):
+                        start_idx = chunk_idx * chunk_size
+                        end_idx = min((chunk_idx + 1) * chunk_size, n_s1)
+                        s1_chunk = s1.iloc[start_idx:end_idx]
+                        
+                        if block_name == "exact":
+                            part = generate_name_exact_candidates(s1_chunk, rhs, rhs_index=rhs_index)
+                        elif block_name == "token":
+                            part = generate_name_candidates(s1_chunk, rhs, min_token_len=4, rhs_index=rhs_index)
+                        elif block_name == "address":
+                            part = generate_address_candidates(s1_chunk, rhs, rhs_index=rhs_index)
+                        elif block_name == "prefix":
+                            part = generate_prefix_candidates(s1_chunk, rhs, prefix_len=3, rhs_index=rhs_index)
+                        elif block_name == "country_token":
+                            part = generate_country_token_candidates(s1_chunk, rhs, min_token_len=4, rhs_index=rhs_index)
+                        elif block_name == "fuzzy":
+                            part = generate_fuzzy_candidates(s1_chunk, rhs, prefix_len=3, score_cutoff=80.0, max_per_s1=50, rhs_buckets=rhs_buckets)
+                        else:
+                            continue
+                            
+                        block_pairs_found += len(part)
+                        
+                        if not part.empty:
+                            out_path = temp_dir_path / f"{rhs_name}_{block_name}_{chunk_idx}.parquet"
+                            part.to_parquet(out_path, index=False, engine="pyarrow")
+                            part_files.append(str(out_path))
+                            
+                        del part
+                        gc.collect()
+                        
+                        if verbose and (chunk_idx + 1) % 10 == 0:
+                            print(f"  source={rhs_name} block={block_name} chunk={chunk_idx+1}/{n_chunks} pairs={block_pairs_found:,}", flush=True)
+                            
+                    if verbose:
+                        print(f"  Block [{block_name:12s}] x {rhs_name}: {block_pairs_found:>8,} pairs TOTAL", flush=True)
+
+                    del rhs_index
+                    del rhs_buckets
                     gc.collect()
+
                 except Exception as exc:
                     tag = f"{block_name}/{rhs_name}"
                     failed_blocks.append(tag)
@@ -706,7 +795,7 @@ def generate_candidates_memory_safe(
 
         if failed_blocks:
             print(
-                f"\n  *** {len(failed_blocks)} block(s) FAILED: {failed_blocks} ***",
+                f"\n*** {len(failed_blocks)} block(s) FAILED: {failed_blocks} ***",
                 flush=True,
             )
             raise RuntimeError(
@@ -718,16 +807,19 @@ def generate_candidates_memory_safe(
             internal_df = pd.DataFrame(columns=["source1_entity_id", "candidate_entity_id"])
         else:
             if verbose:
-                print(f"\nMerging {len(part_files)} block files...", flush=True)
-            all_parts = [pd.read_parquet(p) for p in part_files]
-            raw = pd.concat(all_parts, ignore_index=True)
-            del all_parts
-            gc.collect()
+                print(f"\nMerging {len(part_files)} block files with DuckDB...", flush=True)
             
-            internal_df = raw.drop_duplicates(
-                subset=["source1_entity_id", "candidate_entity_id"]
-            ).reset_index(drop=True)
-            del raw
+            con = duckdb.connect(database=':memory:')
+            
+            # Using read_parquet with a list of files handles all of them natively out-of-core
+            # Note: We must format the string list properly for DuckDB
+            parquet_list_str = ", ".join([f"'{p}'" for p in part_files])
+            query = f"""
+                SELECT DISTINCT source1_entity_id, candidate_entity_id
+                FROM read_parquet([{parquet_list_str}])
+            """
+            internal_df = con.execute(query).df()
+            con.close()
             gc.collect()
 
     if verbose:
