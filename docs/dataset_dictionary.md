@@ -109,8 +109,40 @@ Normalization is implemented in `src/preprocess.py` via three functions:
    This ensures `"St."` == `"St"`, but **address numbers and digits are preserved** (they are `\w` characters).
 5. **Whitespace normalization** — multiple consecutive spaces are collapsed to one; leading and trailing whitespace is stripped.
 
+**Phase 4 validated token-level rules** (applied after the base pipeline):
+
+*`normalize_name()` additionally applies validated legal-suffix rules:*
+
+| Abbreviated form | Canonical form | Validated |
+|---|---|---|
+| `pvt` | `private` | Phase 4 ✓ |
+| `ltd` | `limited` | Phase 4 ✓ |
+| `pvt ltd` (phrase) | `private limited` | Phase 4 ✓ |
+| `inc` | `incorporated` | Phase 4 ✓ |
+| `corp` | `corporation` | Phase 4 ✓ |
+| `llp` | `limited liability partnership` | Phase 4 ✓ |
+
+*`normalize_address()` additionally applies validated street-type abbreviation rules:*
+
+| Abbreviated form | Canonical form | Validated |
+|---|---|---|
+| `ave` | `avenue` | Phase 4 ✓ |
+| `blvd` | `boulevard` | Phase 4 ✓ |
+| `rd` | `road` | Phase 4 ✓ |
+| `dr` | `drive` | Phase 4 ✓ |
+| `ln` | `lane` | Phase 4 ✓ |
+| `ct` | `court` | Phase 4 ✓ |
+| `pl` | `place` | Phase 4 ✓ |
+| `hwy` | `highway` | Phase 4 ✓ |
+| `pkwy` | `parkway` | Phase 4 ✓ |
+| `apt` | `apartment` | Phase 4 ✓ |
+| `ste` | `suite` | Phase 4 ✓ |
+
+> **Deliberately excluded:** `st` (ambiguous: street vs. saint) and single-letter directionals `n/s/e/w` (too ambiguous). See `notebooks/02_normalization_effectiveness.ipynb` Phase 4 for the full rule-validation table.
+
 **Design principle:** normalization aims to *reduce surface noise* without *discarding meaningful information*.  
-Aggressive stemming, stop-word removal, or abbreviation expansion are **not** applied at this stage; those are left to the matching/feature-engineering stage.
+Stemming, stop-word removal, and fuzzy similarity are **not** applied; those belong to the downstream matching/feature-engineering stage.
+
 
 ---
 
