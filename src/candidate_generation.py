@@ -530,7 +530,14 @@ def generate_candidates(
                 print(f"  Block [{block_name}] x {rhs_name} FAILED: {exc}", flush=True)
 
     if failed_blocks:
-        print(f"\n  *** {len(failed_blocks)} block(s) FAILED: {failed_blocks} ***")
+        print(
+            f"\n  *** {len(failed_blocks)} block(s) FAILED: {failed_blocks} ***",
+            flush=True,
+        )
+        raise RuntimeError(
+            f"Candidate generation failed for {len(failed_blocks)} block(s): "
+            f"{failed_blocks}"
+        )
 
     if not all_parts:
         internal_df = pd.DataFrame(
