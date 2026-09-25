@@ -1,90 +1,71 @@
 """
-features.py
------------
-Member 3 – Amazon ML Challenge 2026 – Business Entity Resolution
+src/features.py
+===============
+Baseline pair-level feature extraction for the Amazon ML Challenge 2026.
 
-REUSABLE PAIR-LEVEL FEATURE EXTRACTION MODULE
-==============================================
+Member 3 deliverable — baseline matching module.
 
-This module exposes functions for computing the 16-feature baseline
-feature vector for a (S1 entity, candidate entity) pair.
-
-It is the canonical implementation that BOTH train.py and predict.py
-should import from.  The feature names, normalisation logic, and all
-similarity formulas are identical to those used in the Colab baseline
-(student_resource/src/matching/extract_features.py) so that downstream
-model training and inference are compatible with the pre-computed
-baseline_features.tsv.
-
-Design principles
------------------
-* Pure functions – no global mutable state.
-* Safe for missing / empty / NaN inputs at every level.
-* Non-destructive – input dicts / DataFrames are never modified.
-* Deterministic – same inputs always produce the same numeric outputs.
-* No NaN in the output vector; all values are finite floats or ints.
+This module extracts the agreed 16-feature baseline vector for a
+(S1 entity, candidate entity) pair.  Normalization is NOT reimplemented
+here; all text cleaning is delegated entirely to src/preprocess.py
+(Member 2's deliverable).
 
 Feature set
 -----------
-NAME (6)
-  name_exact                – 1 if normalised names match exactly
-  name_jaccard              – Jaccard similarity on token sets
-  name_token_overlap        – |A∩B| / max(|A|,|B|)
-  name_levenshtein_ratio    – 1 − edit_dist / max(len(A),len(B))
-  name_length_difference    – |len(A)−len(B)| / max(len(A),len(B))  ∈ [0,1]
-  name_token_count_diff     – |#tokens(A) − #tokens(B)|  (raw int)
+Name similarity (6):
+    name_exact              — 1 if normalized names are identical
+    name_jaccard            — Jaccard similarity of character 3-grams
+    name_token_overlap      — Jaccard similarity of token sets
+    name_levenshtein_ratio  — Normalized Levenshtein similarity (0–1)
+    name_length_difference  — |len(n1) - len(n2)| / max(len, 1)
+    name_token_count_diff   — |tokens(n1) - tokens(n2)| / max(count, 1)
 
-ADDRESS (7)
-  address_exact             – 1 if normalised addresses match exactly
-  address_jaccard
-  address_token_overlap
-  address_levenshtein_ratio
-  address_length_difference
-  address_token_count_diff
-  address_missing           – 1 if either address is empty / NaN
-  NOTE: when address_missing==1 all other address features are set to 0.
+Address similarity (7):
+    address_exact           — 1 if normalized addresses are identical
+    address_jaccard         — Jaccard similarity of character 3-grams
+    address_token_overlap   — Jaccard similarity of token sets
+    address_levenshtein_ratio
+    address_length_difference
+    address_token_count_diff
+    address_missing         — 1 if EITHER normalized address is empty
 
-OTHER (3)
-  country_match             – 1 if both countries are identical and non-empty
-  source_is_s2              – 1 if candidate_source == "S2"
-  source_is_s3              – 1 if candidate_source == "S3"
+Other (3):
+    country_match           — 1 if country strings are equal (raw, lowercased)
+    source_is_s2            — 1 if the candidate entity_id starts with "S2-"
+    source_is_s3            — 1 if the candidate entity_id starts with "S3-"
 
-Usage example
--------------
-    from src.features import FEATURE_COLS, extract_pair_features, extract_features_batch
+Total: 16 features.
 
-    record_a = {"business_name": "Acme Corp", "business_address": "123 Main St", "country": "US"}
-    record_b = {"business_name": "ACME Corporation", "business_address": "", "country": "US"}
-
-    feat_dict = extract_pair_features(record_a, record_b, candidate_source="S2")
-    # → {"name_exact": 0, "name_jaccard": 0.5, ..., "source_is_s2": 1, ...}
-
-    # DataFrame-level batch helper:
-    feat_df = extract_features_batch(pairs_df, records_lookup)
+Design principles
+-----------------
+  • Pure functions: given identical inputs the output is always identical.
+  • No side effects, no global mutable state.
+  • Normalization is read from pre-computed _norm columns; this module
+    never calls normalize_name / normalize_address directly on raw values.
+  • Levenshtein is computed via a pure-Python DP implementation so there
+    is no hard dependency on python-Levenshtein / editdistance at feature
+    extraction time.
 """
 
 from __future__ import annotations
 
 import re
-import unicodedata
-from typing import Any
+from typing import Optional
 
 import pandas as pd
 
-# ---------------------------------------------------------------------------
-# CONSTANTS
-# ---------------------------------------------------------------------------
-
-#: Ordered list of the 16 feature column names produced by this module.
-#: This order matches the Colab baseline and is the contract for downstream
-#: train.py / predict.py consumers.
-FEATURE_COLS: list[str] = [
+# ─────────────────────────────────────────────────────────────────────────────
+# Agreed feature names (canonical order — must match train.py and predict.py)
+# ─────────────────────────────────────────────────────────────────────────────
+FEATURE_NAMES: list[str] = [
+    # Name
     "name_exact",
     "name_jaccard",
     "name_token_overlap",
     "name_levenshtein_ratio",
     "name_length_difference",
     "name_token_count_diff",
+    # Address
     "address_exact",
     "address_jaccard",
     "address_token_overlap",
@@ -92,436 +73,176 @@ FEATURE_COLS: list[str] = [
     "address_length_difference",
     "address_token_count_diff",
     "address_missing",
+    # Other
     "country_match",
     "source_is_s2",
     "source_is_s3",
 ]
 
-# ---------------------------------------------------------------------------
-# TEXT NORMALISATION
-# ---------------------------------------------------------------------------
 
-_PUNCT_RE = re.compile(r"[^\w\s]", re.UNICODE)
+# ─────────────────────────────────────────────────────────────────────────────
+# Internal similarity helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
-
-def normalise(text: Any) -> str:
-    """Normalise a raw field value to a clean, comparable string.
-
-    Pipeline (matches Colab baseline exactly):
-      1. Return ``""`` for any non-string / NaN / None input.
-      2. Unicode NFC normalisation.
-      3. Lowercase.
-      4. Replace all non-word, non-space characters with a space.
-      5. Collapse internal whitespace and strip leading/trailing spaces.
-
-    Parameters
-    ----------
-    text:
-        Raw value from the dataset (may be str, float NaN, None, etc.).
-
-    Returns
-    -------
-    str
-        Clean, normalised string, never ``None``.
-
-    Examples
-    --------
-    >>> normalise("  Acme, Corp.  ")
-    'acme corp'
-    >>> normalise(None)
-    ''
-    >>> normalise(float('nan'))
-    ''
-    """
-    if not isinstance(text, str):
-        return ""
-    text = unicodedata.normalize("NFC", text)
-    text = text.lower()
-    text = _PUNCT_RE.sub(" ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
+def _char_ngrams(text: str, n: int = 3) -> set[str]:
+    """Return the set of character n-grams in *text*."""
+    if len(text) < n:
+        return {text} if text else set()
+    return {text[i: i + n] for i in range(len(text) - n + 1)}
 
 
-def tokenise(text: str) -> list[str]:
-    """Split a normalised string into word tokens.
-
-    Parameters
-    ----------
-    text:
-        A normalised (already lowercased / cleaned) string.
-
-    Returns
-    -------
-    list[str]
-        List of whitespace-separated tokens; empty list for empty input.
-
-    Examples
-    --------
-    >>> tokenise("acme corp llc")
-    ['acme', 'corp', 'llc']
-    >>> tokenise("")
-    []
-    """
-    return text.split() if text else []
+def _jaccard(set_a: set, set_b: set) -> float:
+    """Jaccard similarity: |A ∩ B| / |A ∪ B|.  Returns 0.0 if both empty."""
+    union = set_a | set_b
+    if not union:
+        return 0.0
+    return len(set_a & set_b) / len(union)
 
 
-# ---------------------------------------------------------------------------
-# PRIMITIVE SIMILARITY FUNCTIONS
-# ---------------------------------------------------------------------------
+def _token_set(text: str) -> set[str]:
+    """Split *text* on whitespace and return the set of non-empty tokens."""
+    return set(text.split())
+
 
 def _levenshtein(a: str, b: str) -> int:
-    """Compute the Levenshtein (edit) distance between two strings.
-
-    Uses the two-row DP algorithm – O(m·n) time, O(min(m,n)) space.
-    Correct and fast for the short strings typical of business names /
-    addresses (≤ ~200 chars).
-
-    Parameters
-    ----------
-    a, b:
-        Strings to compare (assumed already normalised).
-
-    Returns
-    -------
-    int
-        Minimum number of single-character edits (insertions, deletions,
-        substitutions) to transform ``a`` into ``b``.
-    """
+    """Pure-Python O(|a|·|b|) Levenshtein edit distance."""
     if a == b:
         return 0
-    la, lb = len(a), len(b)
-    if la == 0:
-        return lb
-    if lb == 0:
-        return la
-    prev = list(range(lb + 1))
-    for i in range(1, la + 1):
-        curr = [i] + [0] * lb
-        for j in range(1, lb + 1):
-            cost = 0 if a[i - 1] == b[j - 1] else 1
-            curr[j] = min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost)
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    # Single-row DP (space-efficient)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        curr = [i] + [0] * len(b)
+        for j, cb in enumerate(b, 1):
+            curr[j] = min(
+                prev[j] + 1,          # deletion
+                curr[j - 1] + 1,      # insertion
+                prev[j - 1] + (ca != cb),  # substitution
+            )
         prev = curr
-    return prev[lb]
+    return prev[-1]
 
 
-def levenshtein_ratio(a: str, b: str) -> float:
-    """Normalised Levenshtein similarity ∈ [0, 1].
-
-    Defined as ``1 − edit_distance(a, b) / max(len(a), len(b))``.
-    Returns 1.0 when both strings are empty (perfect match by convention).
-
-    Parameters
-    ----------
-    a, b:
-        Normalised strings.
-
-    Returns
-    -------
-    float
-        Similarity score in [0.0, 1.0].  Higher = more similar.
-
-    Examples
-    --------
-    >>> levenshtein_ratio("acme", "acme")
-    1.0
-    >>> levenshtein_ratio("", "")
-    1.0
-    >>> levenshtein_ratio("abc", "xyz")
-    0.0
-    """
-    if not a and not b:
-        return 1.0
+def _lev_ratio(a: str, b: str) -> float:
+    """Normalized Levenshtein similarity in [0, 1]."""
     max_len = max(len(a), len(b))
     if max_len == 0:
-        return 1.0
+        return 0.0
     return 1.0 - _levenshtein(a, b) / max_len
 
 
-def jaccard(toks_a: list[str], toks_b: list[str]) -> float:
-    """Jaccard similarity on two token lists (treated as sets).
-
-    Defined as ``|A ∩ B| / |A ∪ B|``.
-    Returns 1.0 when both token lists are empty.
-
-    Parameters
-    ----------
-    toks_a, toks_b:
-        Token lists from ``tokenise()``.
-
-    Returns
-    -------
-    float
-        Jaccard similarity ∈ [0.0, 1.0].
-
-    Examples
-    --------
-    >>> jaccard(["acme", "corp"], ["acme", "llc"])
-    0.3333333333333333
-    >>> jaccard([], [])
-    1.0
-    """
-    sa, sb = set(toks_a), set(toks_b)
-    union = sa | sb
-    if not union:
-        return 1.0
-    return len(sa & sb) / len(union)
-
-
-def token_overlap(toks_a: list[str], toks_b: list[str]) -> float:
-    """Overlap coefficient on two token lists (treated as sets).
-
-    Defined as ``|A ∩ B| / max(|A|, |B|)``.
-    Returns 1.0 when both token lists are empty.
-
-    Parameters
-    ----------
-    toks_a, toks_b:
-        Token lists from ``tokenise()``.
-
-    Returns
-    -------
-    float
-        Overlap coefficient ∈ [0.0, 1.0].
-
-    Examples
-    --------
-    >>> token_overlap(["a", "b", "c"], ["a", "b"])
-    0.6666666666666666
-    >>> token_overlap([], [])
-    1.0
-    """
-    sa, sb = set(toks_a), set(toks_b)
-    denom = max(len(sa), len(sb))
-    if denom == 0:
-        return 1.0
-    return len(sa & sb) / denom
-
-
-def length_diff_norm(a: str, b: str) -> float:
-    """Normalised absolute character-length difference ∈ [0, 1].
-
-    Defined as ``|len(a) − len(b)| / max(len(a), len(b))``.
-    Returns 0.0 when both strings are empty (no difference).
-
-    Parameters
-    ----------
-    a, b:
-        Normalised strings.
-
-    Returns
-    -------
-    float
-        Normalised length difference ∈ [0.0, 1.0].  0 = same length.
-
-    Examples
-    --------
-    >>> length_diff_norm("abc", "abcdef")
-    0.5
-    >>> length_diff_norm("", "")
-    0.0
-    """
+def _length_diff(a: str, b: str) -> float:
+    """Relative length difference: |len(a) - len(b)| / max(len, 1)."""
     la, lb = len(a), len(b)
-    denom = max(la, lb)
-    if denom == 0:
-        return 0.0
-    return abs(la - lb) / denom
+    return abs(la - lb) / max(la, lb, 1)
 
 
-# ---------------------------------------------------------------------------
-# PAIR-LEVEL FEATURE EXTRACTION  (main public API)
-# ---------------------------------------------------------------------------
+def _token_count_diff(a: str, b: str) -> float:
+    """Relative token-count difference."""
+    ta = len(a.split()) if a else 0
+    tb = len(b.split()) if b else 0
+    return abs(ta - tb) / max(ta, tb, 1)
 
-def extract_pair_features(
-    record_a: dict[str, Any],
-    record_b: dict[str, Any],
-    candidate_source: str,
-) -> dict[str, float | int]:
-    """Extract all 16 baseline features for a single (S1, candidate) pair.
 
-    This is the single-pair entry point.  Both ``train.py`` and
-    ``predict.py`` can call this function directly, or use the batch
-    helper ``extract_features_batch`` for DataFrame-level processing.
+# ─────────────────────────────────────────────────────────────────────────────
+# Text-pair similarity block  (reused for name and address)
+# ─────────────────────────────────────────────────────────────────────────────
 
-    The function is non-destructive: ``record_a`` and ``record_b`` are
-    read but never modified.
+def _text_features(a: str, b: str) -> tuple[float, float, float, float, float, float]:
+    """
+    Return (exact, jaccard, token_overlap, lev_ratio, length_diff, tok_count_diff)
+    for a normalized text pair.
+    """
+    exact = float(a == b)
+    jaccard = _jaccard(_char_ngrams(a), _char_ngrams(b))
+    token_overlap = _jaccard(_token_set(a), _token_set(b))
+    lev = _lev_ratio(a, b)
+    ldiff = _length_diff(a, b)
+    tcdiff = _token_count_diff(a, b)
+    return exact, jaccard, token_overlap, lev, ldiff, tcdiff
 
-    Parameters
-    ----------
-    record_a:
-        Dict for the S1 entity.  Expected keys (all optional, missing
-        keys default to empty string):
-          - ``"business_name"``   (str)
-          - ``"business_address"`` (str)
-          - ``"country"``         (str)
-    record_b:
-        Dict for the candidate entity (S2 or S3).  Same key schema as
-        ``record_a``.
-    candidate_source:
-        Source identifier of the candidate entity, either ``"S2"`` or
-        ``"S3"``.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Public API
+# ─────────────────────────────────────────────────────────────────────────────
+
+def extract_features(row: pd.Series) -> dict[str, float]:
+    """
+    Extract the 16 baseline features for a single candidate pair.
+
+    The input *row* must contain pre-computed _norm columns produced by
+    src/preprocess.py (Member 2).  Raw columns are never read here.
+
+    Expected columns
+    ----------------
+    From the S1 side:
+        s1_name_norm, s1_address_norm, s1_country
+
+    From the candidate side:
+        cand_name_norm, cand_address_norm, cand_country, cand_entity_id
 
     Returns
     -------
-    dict[str, float | int]
-        Mapping of ``FEATURE_COLS`` names to their computed values.
-        All values are finite (no NaN, no None).
-
-    Examples
-    --------
-    >>> rec_a = {"business_name": "Acme Corp", "business_address": "123 Main St", "country": "US"}
-    >>> rec_b = {"business_name": "ACME Corporation", "business_address": "", "country": "US"}
-    >>> feats = extract_pair_features(rec_a, rec_b, "S2")
-    >>> feats["name_exact"]
-    0
-    >>> feats["country_match"]
-    1
-    >>> feats["address_missing"]
-    1
-    >>> feats["source_is_s2"]
-    1
+    dict mapping each feature name (in FEATURE_NAMES order) to a float.
     """
-    # ── 1. Normalise raw strings ──────────────────────────────────────────
-    n1 = normalise(record_a.get("business_name", ""))
-    n2 = normalise(record_b.get("business_name", ""))
-    a1 = normalise(record_a.get("business_address", ""))
-    a2 = normalise(record_b.get("business_address", ""))
-    c1 = (record_a.get("country") or "").strip().lower()
-    c2 = (record_b.get("country") or "").strip().lower()
+    s1_name = str(row.get("s1_name_norm", "") or "")
+    s1_addr = str(row.get("s1_address_norm", "") or "")
+    s1_ctry = str(row.get("s1_country", "") or "").strip().lower()
 
-    # ── 2. Tokenise ───────────────────────────────────────────────────────
-    nt1, nt2 = tokenise(n1), tokenise(n2)
-    at1, at2 = tokenise(a1), tokenise(a2)
+    cn_name = str(row.get("cand_name_norm", "") or "")
+    cn_addr = str(row.get("cand_address_norm", "") or "")
+    cn_ctry = str(row.get("cand_country", "") or "").strip().lower()
+    cand_id = str(row.get("cand_entity_id", "") or "")
 
-    # ── 3. Name features ─────────────────────────────────────────────────
-    name_exact            = int(n1 == n2)
-    name_jac              = jaccard(nt1, nt2)
-    name_tok_ov           = token_overlap(nt1, nt2)
-    name_lev              = levenshtein_ratio(n1, n2)
-    name_len_diff         = length_diff_norm(n1, n2)
-    name_tok_diff         = abs(len(nt1) - len(nt2))
+    # Name block
+    n_exact, n_jac, n_tok, n_lev, n_ldiff, n_tcdiff = _text_features(s1_name, cn_name)
 
-    # ── 4. Address features ───────────────────────────────────────────────
-    # Gate: if either address is missing/empty, similarity scores are 0.
-    addr_missing = int((not a1) or (not a2))
-    if addr_missing:
-        addr_exact    = 0
-        addr_jac      = 0.0
-        addr_tok_ov   = 0.0
-        addr_lev      = 0.0
-        addr_len_diff = 0.0
-        addr_tok_diff = 0
-    else:
-        addr_exact    = int(a1 == a2)
-        addr_jac      = jaccard(at1, at2)
-        addr_tok_ov   = token_overlap(at1, at2)
-        addr_lev      = levenshtein_ratio(a1, a2)
-        addr_len_diff = length_diff_norm(a1, a2)
-        addr_tok_diff = abs(len(at1) - len(at2))
+    # Address block
+    a_exact, a_jac, a_tok, a_lev, a_ldiff, a_tcdiff = _text_features(s1_addr, cn_addr)
+    addr_missing = float(s1_addr == "" or cn_addr == "")
 
-    # ── 5. Other features ────────────────────────────────────────────────
-    # country_match is 0 when either country is empty (avoids false matches)
-    country_match = int(c1 == c2 and c1 != "")
-    source_is_s2  = int(candidate_source == "S2")
-    source_is_s3  = int(candidate_source == "S3")
+    # Other
+    country_match = float(s1_ctry == cn_ctry and s1_ctry != "")
+    source_is_s2 = float(cand_id.startswith("S2-"))
+    source_is_s3 = float(cand_id.startswith("S3-"))
 
     return {
-        "name_exact":              name_exact,
-        "name_jaccard":            name_jac,
-        "name_token_overlap":      name_tok_ov,
-        "name_levenshtein_ratio":  name_lev,
-        "name_length_difference":  name_len_diff,
-        "name_token_count_diff":   name_tok_diff,
-        "address_exact":           addr_exact,
-        "address_jaccard":         addr_jac,
-        "address_token_overlap":   addr_tok_ov,
-        "address_levenshtein_ratio": addr_lev,
-        "address_length_difference": addr_len_diff,
-        "address_token_count_diff":  addr_tok_diff,
-        "address_missing":         addr_missing,
-        "country_match":           country_match,
-        "source_is_s2":            source_is_s2,
-        "source_is_s3":            source_is_s3,
+        "name_exact":            n_exact,
+        "name_jaccard":          n_jac,
+        "name_token_overlap":    n_tok,
+        "name_levenshtein_ratio": n_lev,
+        "name_length_difference": n_ldiff,
+        "name_token_count_diff": n_tcdiff,
+        "address_exact":         a_exact,
+        "address_jaccard":       a_jac,
+        "address_token_overlap": a_tok,
+        "address_levenshtein_ratio": a_lev,
+        "address_length_difference": a_ldiff,
+        "address_token_count_diff":  a_tcdiff,
+        "address_missing":       addr_missing,
+        "country_match":         country_match,
+        "source_is_s2":          source_is_s2,
+        "source_is_s3":          source_is_s3,
     }
 
 
-# ---------------------------------------------------------------------------
-# BATCH HELPER  (DataFrame-level)
-# ---------------------------------------------------------------------------
-
-def extract_features_batch(
-    pairs: pd.DataFrame,
-    records: dict[str, dict[str, Any]],
-) -> pd.DataFrame:
-    """Compute features for a batch of pairs stored in a DataFrame.
-
-    This is a convenience wrapper around ``extract_pair_features`` for
-    use in train.py and predict.py where pairs arrive as a DataFrame.
+def build_feature_matrix(pairs_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Apply extract_features() to every row of *pairs_df* and return a
+    DataFrame with columns exactly equal to FEATURE_NAMES (in order).
 
     Parameters
     ----------
-    pairs:
-        DataFrame with AT LEAST the following columns:
-          - ``"s1_entity_id"``       (str)
-          - ``"candidate_entity_id"`` (str)
-          - ``"candidate_source"``    (str, ``"S2"`` or ``"S3"``)
-        Any additional columns (e.g. ``"label"``) are preserved and
-        prepended to the output DataFrame.
-    records:
-        Lookup dict ``entity_id → {"business_name", "business_address",
-        "country"}``.  Missing entity IDs are handled gracefully (all
-        fields default to empty string, producing safe neutral feature
-        values).
+    pairs_df : DataFrame
+        Each row is a candidate pair with the columns described in
+        extract_features().
 
     Returns
     -------
-    pd.DataFrame
-        Original ``pairs`` columns followed by all 16 feature columns in
-        ``FEATURE_COLS`` order.  No NaN values in the feature columns.
-
-    Raises
-    ------
-    KeyError
-        If ``pairs`` is missing any of the required identifier columns.
-
-    Examples
-    --------
-    >>> import pandas as pd
-    >>> pairs_df = pd.DataFrame([
-    ...     {"s1_entity_id": "S1-1", "candidate_entity_id": "S2-1",
-    ...      "candidate_source": "S2", "label": 1},
-    ... ])
-    >>> recs = {
-    ...     "S1-1": {"business_name": "Acme", "business_address": "123 St", "country": "US"},
-    ...     "S2-1": {"business_name": "Acme", "business_address": "123 St", "country": "US"},
-    ... }
-    >>> feat_df = extract_features_batch(pairs_df, recs)
-    >>> feat_df["name_exact"].iloc[0]
-    1
+    DataFrame of shape (len(pairs_df), 16) with float64 dtype.
     """
-    # Validate required columns
-    required = {"s1_entity_id", "candidate_entity_id", "candidate_source"}
-    missing_cols = required - set(pairs.columns)
-    if missing_cols:
-        raise KeyError(
-            f"extract_features_batch: pairs DataFrame is missing required "
-            f"columns: {sorted(missing_cols)}"
-        )
-
-    feature_rows: list[dict] = []
-
-    for row in pairs.itertuples(index=False):
-        s1_id   = row.s1_entity_id
-        cand_id = row.candidate_entity_id
-        src     = row.candidate_source
-
-        r1 = records.get(s1_id, {})
-        r2 = records.get(cand_id, {})
-
-        feat = extract_pair_features(r1, r2, candidate_source=src)
-        feature_rows.append(feat)
-
-    feat_df = pd.DataFrame(feature_rows, columns=FEATURE_COLS)
-
-    # Reset pairs index to align before concatenation
-    pairs_reset = pairs.reset_index(drop=True)
-    return pd.concat([pairs_reset, feat_df], axis=1)
+    records = [extract_features(row) for _, row in pairs_df.iterrows()]
+    return pd.DataFrame(records, columns=FEATURE_NAMES, index=pairs_df.index)

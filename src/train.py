@@ -1,556 +1,419 @@
 """
-train.py
+src/train.py
+============
+Baseline training pipeline for the Amazon ML Challenge 2026.
+
+Member 3 deliverable — baseline matching module.
+
+Pipeline
 --------
-Member 3 - Amazon ML Challenge 2026 - Business Entity Resolution
+1. Load train_source1/2/3.tsv and train_ground_truth.tsv.
+2. Apply M2 normalization (src/preprocess.py) to name and address fields.
+3. Load candidate_pairs.tsv produced by Member 4 (M4).
+4. Build labeled pair rows: join candidate pairs with source records.
+5. Extract the 16 baseline features (src/features.py).
+6. Entity-level train/validation split (80/20, random_state=42).
+7. Train StandardScaler + LogisticRegression baseline.
+8. Threshold sweep (0.50 → 0.95) using the official entity-level macro F0.5.
+9. Save model artifacts and results.
 
-BASELINE TRAINING PIPELINE
-===========================
+Official metric
+---------------
+Entity-level macro F0.5 — computed as follows for EACH labeled S1 entity:
 
-Trains a Logistic Regression classifier on the 16 baseline features to
-predict whether a (S1, candidate) entity pair is a true match (label=1).
+    truth = set of true matched IDs for that entity
+    predicted = set of candidate IDs predicted as matches at threshold t
 
-Inputs
-------
-  output/training_pairs_baseline.tsv
-      Pre-generated labelled pair dataset (s1_entity_id, candidate_entity_id,
-      candidate_source, label).  Produced by generate_pairs.py.
+    If truth == {} and predicted == {}:  entity_f05 = 1.0
+    If truth == {} and predicted != {}:  entity_f05 = 0.0
+    Otherwise:
+        precision = |truth ∩ predicted| / |predicted|  (0 if predicted empty)
+        recall    = |truth ∩ predicted| / |truth|      (0 if truth empty)
+        entity_f05 = (1 + 0.5²) · P · R / (0.5² · P + R)  if P+R > 0 else 0
 
-  dataset/train/train_source{1,2,3}.tsv
-      Raw entity records used to compute live features via src/features.py.
-      If the pre-computed baseline_features.tsv is found alongside the pairs
-      file it is loaded directly (faster); otherwise features are recomputed
-      on the fly from the source TSVs (allows the pipeline to run wherever
-      the raw data lives without re-running extract_features.py).
+Final score = mean(entity_f05) across all validation S1 entities.
 
 Outputs
 -------
-  models/matcher.pkl                    - trained sklearn Pipeline
-  models/model_config.json              - full run config + validation metrics
-  output/baseline_training_results.json - detailed run results (mirrors config)
-  output/baseline_threshold_results.tsv - per-threshold P/R/F0.5 table
-
-Entity-level split
-------------------
-  Unique s1_entity_ids are split 80/20 (train/validation) with random_state=42.
-  ZERO pair-level overlap across splits is guaranteed by construction.
-
-Metric
-------
-  Entity-level macro Precision, Recall, F0.5 on the validation set.
-  For each S1 entity the set of predicted matches (at a given threshold)
-  is compared with the ground-truth set.  Per-entity P/R are averaged.
-
-Usage
------
-  python src/train.py
-  python src/train.py --pairs output/training_pairs_baseline.tsv
-  python src/train.py --source-dir dataset/train --pairs output/training_pairs_baseline.tsv
+models/matcher.pkl           — (scaler, model) tuple
+models/model_config.json     — full experiment metadata
+output/baseline_training_results.json
+output/baseline_threshold_results.tsv
 """
 
 from __future__ import annotations
 
-import argparse
 import json
-import os
+import pickle
 import sys
-import time
 from pathlib import Path
 
-import joblib
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
-from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-# ?? make src/ importable when running as  python src/train.py ??????????????
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_REPO_ROOT))
+# ── Path setup ────────────────────────────────────────────────────────────────
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
 
-from src.features import FEATURE_COLS, extract_features_batch  # noqa: E402
+from preprocess import normalize_name, normalize_address   # noqa: E402  (M2)
+from features import build_feature_matrix, FEATURE_NAMES  # noqa: E402  (M3)
 
-# ?????????????????????????????????????????????????????????????????????????????
-# DEFAULTS  (all overridable via CLI)
-# ?????????????????????????????????????????????????????????????????????????????
-DEFAULT_PAIRS     = "output/training_pairs_baseline.tsv"
-DEFAULT_SOURCE_DIR = "dataset/train"
-DEFAULT_FEATURES  = "output/baseline_features.tsv"   # optional pre-computed cache
-DEFAULT_MODEL_OUT  = "models/matcher.pkl"
-DEFAULT_CONFIG_OUT = "models/model_config.json"
-DEFAULT_RESULTS    = "output/baseline_training_results.json"
-DEFAULT_THRESH_TSV = "output/baseline_threshold_results.tsv"
-
-RANDOM_STATE  = 42
-TRAIN_RATIO   = 0.80
-THRESHOLDS    = [round(t, 2) for t in np.arange(0.50, 1.00, 0.05)]
-BASELINE_VERSION = "baseline-v1"
+RANDOM_STATE = 42
+BETA = 0.5   # F0.5: precision-weighted
 
 
-# ?????????????????????????????????????????????????????????????????????????????
-# LOGGING
-# ?????????????????????????????????????????????????????????????????????????????
-def log(msg: str) -> None:
-    """Timestamped console logger."""
-    print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+# ─────────────────────────────────────────────────────────────────────────────
+# Official metric helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def f_beta(precision: float, recall: float, beta: float = BETA) -> float:
+    """F-beta score for a single (precision, recall) pair."""
+    b2 = beta ** 2
+    denom = b2 * precision + recall
+    if denom == 0.0:
+        return 0.0
+    return (1 + b2) * precision * recall / denom
 
 
-# ?????????????????????????????????????????????????????????????????????????????
-# ARGUMENT PARSER
-# ?????????????????????????????????????????????????????????????????????????????
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description="M3 Baseline Training Pipeline - Amazon ML Challenge 2026"
-    )
-    p.add_argument("--pairs", default=DEFAULT_PAIRS,
-                   help=f"Path to labelled pairs TSV. Default: {DEFAULT_PAIRS}")
-    p.add_argument("--source-dir", default=DEFAULT_SOURCE_DIR,
-                   help=f"Dir containing train_source{{1,2,3}}.tsv. "
-                        f"Default: {DEFAULT_SOURCE_DIR}")
-    p.add_argument("--features", default=DEFAULT_FEATURES,
-                   help=f"Pre-computed features TSV (optional). "
-                        f"Default: {DEFAULT_FEATURES}")
-    p.add_argument("--model-out", default=DEFAULT_MODEL_OUT,
-                   help=f"Output path for trained Pipeline. Default: {DEFAULT_MODEL_OUT}")
-    p.add_argument("--config-out", default=DEFAULT_CONFIG_OUT,
-                   help=f"Output path for model config JSON. Default: {DEFAULT_CONFIG_OUT}")
-    p.add_argument("--results", default=DEFAULT_RESULTS,
-                   help=f"Output path for detailed results JSON. Default: {DEFAULT_RESULTS}")
-    p.add_argument("--thresh-tsv", default=DEFAULT_THRESH_TSV,
-                   help=f"Output path for threshold TSV. Default: {DEFAULT_THRESH_TSV}")
-    return p.parse_args()
-
-
-# ?????????????????????????????????????????????????????????????????????????????
-# DATA LOADING
-# ?????????????????????????????????????????????????????????????????????????????
-def load_pairs(pairs_path: str) -> pd.DataFrame:
-    """Load the labelled pair dataset."""
-    log(f"Loading pairs from: {pairs_path}")
-    df = pd.read_csv(
-        pairs_path,
-        sep="\t",
-        dtype={"s1_entity_id": str, "candidate_entity_id": str,
-               "candidate_source": str, "label": int},
-    )
-    log(f"  -> {len(df):,} pairs | {df['label'].sum():,} positive | "
-        f"{(df['label'] == 0).sum():,} negative")
-    return df
-
-
-def load_source_records(source_dir: str) -> dict[str, dict]:
-    """Load entity records from train_source{1,2,3}.tsv into a lookup dict."""
-    COLS = ["entity_id", "business_name", "business_address", "country"]
-    records: dict[str, dict] = {}
-    for src_file in ["train_source1.tsv", "train_source2.tsv", "train_source3.tsv"]:
-        path = os.path.join(source_dir, src_file)
-        log(f"  Loading {path} ...")
-        df = pd.read_csv(path, sep="\t", dtype=str, na_filter=False, usecols=COLS)
-        for row in df.itertuples(index=False):
-            records[row.entity_id] = {
-                "business_name":    row.business_name,
-                "business_address": row.business_address,
-                "country":          row.country,
-            }
-        log(f"    -> {len(df):,} records. Lookup size: {len(records):,}")
-    return records
-
-
-def load_or_compute_features(pairs: pd.DataFrame,
-                              features_path: str,
-                              source_dir: str) -> pd.DataFrame:
+def entity_f05(truth: set[str], predicted: set[str]) -> float:
     """
-    Load pre-computed baseline_features.tsv if available; otherwise compute
-    features from raw source records via src/features.py.
+    Entity-level F0.5 following the competition definition.
 
-    The pre-computed file is ~134 MB and already aligned with the pairs TSV.
-    On the first cold run (no cached file), features are recomputed live.
+      truth empty  AND predicted empty  → 1.0
+      truth empty  AND predicted non-empty → 0.0
+      otherwise standard precision/recall/F0.5
     """
-    if os.path.exists(features_path):
-        log(f"Pre-computed features found at: {features_path}")
-        log("  Loading (this may take 15-30 s for ~946 K rows) ...")
-        feat_df = pd.read_csv(
-            features_path,
-            sep="\t",
-            dtype={"s1_entity_id": str, "candidate_entity_id": str,
-                   "candidate_source": str, "label": int},
-        )
-        # Verify the feature columns are present
-        missing = set(FEATURE_COLS) - set(feat_df.columns)
-        if missing:
-            raise ValueError(
-                f"Pre-computed features file is missing columns: {missing}\n"
-                f"Delete the file and re-run to recompute."
-            )
-        log(f"  -> {len(feat_df):,} rows loaded with {len(FEATURE_COLS)} feature cols.")
-        return feat_df
-    else:
-        log("Pre-computed features NOT found. Computing from source records ...")
-        log("  Loading source entity records ...")
-        records = load_source_records(source_dir)
-        log("  Running feature extraction (may take several minutes for ~946 K rows)...")
-        feat_df = extract_features_batch(pairs, records)
-        log(f"  -> Features computed for {len(feat_df):,} pairs.")
-        return feat_df
+    if not truth and not predicted:
+        return 1.0
+    if not truth:
+        return 0.0
+    tp = len(truth & predicted)
+    prec = tp / len(predicted) if predicted else 0.0
+    rec  = tp / len(truth)
+    return f_beta(prec, rec)
 
 
-# ?????????????????????????????????????????????????????????????????????????????
-# ENTITY-LEVEL SPLIT
-# ?????????????????????????????????????????????????????????????????????????????
-def entity_level_split(
-    df: pd.DataFrame,
-    train_ratio: float = TRAIN_RATIO,
+def macro_f05(
+    s1_ids: list[str],
+    truth_map: dict[str, set[str]],
+    pred_map: dict[str, set[str]],
+) -> float:
+    """
+    Mean entity-level F0.5 across all S1 entities in *s1_ids*.
+
+    Parameters
+    ----------
+    s1_ids   : list of S1 entity IDs to evaluate
+    truth_map: {s1_id → set of true matched IDs}
+    pred_map : {s1_id → set of predicted IDs at this threshold}
+    """
+    scores = [
+        entity_f05(truth_map.get(sid, set()), pred_map.get(sid, set()))
+        for sid in s1_ids
+    ]
+    return float(np.mean(scores)) if scores else 0.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Data helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def load_sources(data_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Load and normalize all four training TSVs."""
+    s1 = pd.read_csv(data_dir / "train_source1.tsv", sep="\t")
+    s2 = pd.read_csv(data_dir / "train_source2.tsv", sep="\t")
+    s3 = pd.read_csv(data_dir / "train_source3.tsv", sep="\t")
+    gt = pd.read_csv(data_dir / "train_ground_truth.tsv", sep="\t")
+
+    # Apply M2 normalization — never reimplemented here
+    for df in (s1, s2, s3):
+        df["business_name_norm"]    = df["business_name"].apply(normalize_name)
+        df["business_address_norm"] = df["business_address"].apply(normalize_address)
+
+    print(f"Loaded  S1={len(s1):,}  S2={len(s2):,}  S3={len(s3):,}  GT={len(gt):,}")
+    return s1, s2, s3, gt
+
+
+def build_truth_map(gt: pd.DataFrame) -> dict[str, set[str]]:
+    """
+    Build {s1_id → set of true matched IDs} from the ground-truth frame.
+    Zero-match rows (NaN / empty matched_entity_ids) map to an empty set.
+    """
+    truth: dict[str, set[str]] = {}
+    for _, row in gt.iterrows():
+        sid = row["source1_entity_id"]
+        val = row["matched_entity_ids"]
+        if pd.isna(val) or str(val).strip() == "":
+            truth[sid] = set()
+        else:
+            truth[sid] = {x.strip() for x in str(val).split(",") if x.strip()}
+    return truth
+
+
+def build_pair_rows(
+    candidates: pd.DataFrame,
+    s1: pd.DataFrame,
+    s2: pd.DataFrame,
+    s3: pd.DataFrame,
+    truth_map: dict[str, set[str]],
+) -> pd.DataFrame:
+    """
+    Join candidate pairs with source records and ground truth labels.
+
+    candidate_pairs.tsv columns: source1_entity_id, candidate_entity_ids
+    (candidate_entity_ids may be comma-separated; one row per candidate)
+    """
+    # Build lookup tables keyed by entity_id
+    s2_lookup = s2.set_index("entity_id")[
+        ["business_name_norm", "business_address_norm", "country"]
+    ].rename(columns={
+        "business_name_norm": "cand_name_norm",
+        "business_address_norm": "cand_address_norm",
+        "country": "cand_country",
+    })
+    s3_lookup = s3.set_index("entity_id")[
+        ["business_name_norm", "business_address_norm", "country"]
+    ].rename(columns={
+        "business_name_norm": "cand_name_norm",
+        "business_address_norm": "cand_address_norm",
+        "country": "cand_country",
+    })
+    cand_lookup = pd.concat([s2_lookup, s3_lookup])
+
+    s1_lookup = s1.set_index("entity_id")[
+        ["business_name_norm", "business_address_norm", "country"]
+    ].rename(columns={
+        "business_name_norm": "s1_name_norm",
+        "business_address_norm": "s1_address_norm",
+        "country": "s1_country",
+    })
+
+    rows = []
+    for _, cand_row in candidates.iterrows():
+        s1_id = cand_row["source1_entity_id"]
+        raw_ids = str(cand_row.get("candidate_entity_ids", "") or "")
+        cand_ids = [x.strip() for x in raw_ids.split(",") if x.strip()]
+
+        if s1_id not in s1_lookup.index:
+            continue
+        s1_rec = s1_lookup.loc[s1_id]
+        truth_set = truth_map.get(s1_id, set())
+
+        for cid in cand_ids:
+            if cid not in cand_lookup.index:
+                continue
+            cand_rec = cand_lookup.loc[cid]
+            rows.append({
+                "source1_entity_id":  s1_id,
+                "cand_entity_id":     cid,
+                "s1_name_norm":       s1_rec["s1_name_norm"],
+                "s1_address_norm":    s1_rec["s1_address_norm"],
+                "s1_country":         s1_rec["s1_country"],
+                "cand_name_norm":     cand_rec["cand_name_norm"],
+                "cand_address_norm":  cand_rec["cand_address_norm"],
+                "cand_country":       cand_rec["cand_country"],
+                "label":              int(cid in truth_set),
+            })
+
+    return pd.DataFrame(rows)
+
+
+def entity_split(
+    pair_df: pd.DataFrame,
+    train_frac: float = 0.80,
     random_state: int = RANDOM_STATE,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Split pairs into train / validation sets by unique s1_entity_id.
+    Split *pair_df* by unique S1 entity (never row-level).
 
-    Guarantees ZERO pair-level overlap: every s1_entity_id appears in
-    exactly one of the two splits.
-
-    Parameters
-    ----------
-    df : DataFrame with column 's1_entity_id'
-    train_ratio : fraction of unique S1 entities for training
-    random_state : RNG seed for reproducibility
-
-    Returns
-    -------
-    (train_df, val_df)
+    Returns (train_pairs, val_pairs).  The intersection of train and val
+    S1 IDs is guaranteed to be empty.
     """
-    unique_s1 = df["s1_entity_id"].unique()
+    s1_ids = pair_df["source1_entity_id"].unique()
     rng = np.random.default_rng(random_state)
-    idx = rng.permutation(len(unique_s1))
+    shuffled = rng.permutation(s1_ids)
+    n_train = int(len(shuffled) * train_frac)
+    train_ids = set(shuffled[:n_train])
+    val_ids   = set(shuffled[n_train:])
 
-    n_train = int(len(unique_s1) * train_ratio)
-    train_ids = set(unique_s1[idx[:n_train]])
-    val_ids   = set(unique_s1[idx[n_train:]])
+    assert train_ids & val_ids == set(), "Split leak: shared S1 IDs!"
 
-    # Safety: no overlap
-    assert len(train_ids & val_ids) == 0, "SAFETY FAIL: s1_entity_id overlap!"
-
-    train_df = df[df["s1_entity_id"].isin(train_ids)].reset_index(drop=True)
-    val_df   = df[df["s1_entity_id"].isin(val_ids)].reset_index(drop=True)
-
-    log(f"  Entity split -- train: {len(train_ids):,} S1 entities "
-        f"({len(train_df):,} pairs) | "
-        f"val: {len(val_ids):,} S1 entities ({len(val_df):,} pairs)")
-
+    train_df = pair_df[pair_df["source1_entity_id"].isin(train_ids)].copy()
+    val_df   = pair_df[pair_df["source1_entity_id"].isin(val_ids)].copy()
     return train_df, val_df
 
 
-# ?????????????????????????????????????????????????????????????????????????????
-# ENTITY-LEVEL EVALUATION METRIC
-# ?????????????????????????????????????????????????????????????????????????????
-def entity_level_metrics(
+# ─────────────────────────────────────────────────────────────────────────────
+# Threshold sweep
+# ─────────────────────────────────────────────────────────────────────────────
+
+def threshold_sweep(
     val_df: pd.DataFrame,
     proba: np.ndarray,
-    threshold: float,
-) -> tuple[float, float, float]:
+    truth_map: dict[str, set[str]],
+    thresholds: list[float] | None = None,
+) -> pd.DataFrame:
     """
-    Compute entity-level macro Precision, Recall, and F0.5 at a given threshold.
+    Evaluate a range of decision thresholds on the validation set.
 
-    For each S1 entity:
-      - predicted_set = {candidate_entity_id where proba >= threshold}
-      - true_set      = {candidate_entity_id where label == 1}
-      - entity_precision = |predicted & true| / |predicted|   (1.0 if |pred|=0)
-      - entity_recall    = |predicted & true| / |true|         (1.0 if |true|=0)
-
-    Macro average is taken over all validation S1 entities.
-    F0.5 weights precision twice as heavily as recall.
-
-    Implementation uses vectorized pandas groupby -- no Python loops over entities.
-
-    Parameters
-    ----------
-    val_df    : validation DataFrame with 's1_entity_id', 'candidate_entity_id', 'label'
-    proba     : 1-D array of P(label=1) probabilities, aligned with val_df rows
-    threshold : classification threshold
-
-    Returns
-    -------
-    (precision, recall, f0_5)  - all in [0, 1]
+    Returns a DataFrame with columns: threshold, precision, recall, f0_5.
     """
-    df = val_df[["s1_entity_id", "label"]].copy()
-    pred_arr = (proba >= threshold).astype(np.int8)
-    df["pred"] = pred_arr
-    # TP per entity: pred AND label = pred * label  (both 0/1, product=1 iff both=1)
-    df["tp_flag"] = pred_arr * df["label"].values.astype(np.int8)
+    if thresholds is None:
+        thresholds = [round(t, 2) for t in np.arange(0.50, 0.96, 0.05)]
 
-    # Single groupby-sum -- fully vectorized C-level, no Python loops per entity
-    agg = df.groupby("s1_entity_id", sort=False)[["tp_flag", "pred", "label"]].sum()
+    val_s1_ids = val_df["source1_entity_id"].unique().tolist()
+    results = []
 
-    tp   = agg["tp_flag"].values.astype(float)   # TP count per entity
-    pp   = agg["pred"].values.astype(float)       # predicted positives per entity
-    tp_g = agg["label"].values.astype(float)      # ground-truth positives per entity
+    for t in thresholds:
+        pred_positive = proba >= t
+        pred_map: dict[str, set[str]] = {}
+        for sid in val_s1_ids:
+            pred_map[sid] = set()
 
+        mask_df = val_df.copy()
+        mask_df["_pos"] = pred_positive
+        for sid, grp in mask_df.groupby("source1_entity_id"):
+            pred_map[sid] = set(grp.loc[grp["_pos"], "cand_entity_id"])
 
-    # Entity-level precision (1.0 when no predictions to avoid penalising cautious entities)
-    prec_per = np.where(pp > 0, tp / pp, 1.0)
-    # Entity-level recall (1.0 when no ground-truth matches for this entity)
-    rec_per  = np.where(tp_g > 0, tp / tp_g, 1.0)
+        # Per-entity precision / recall (for the aggregate report)
+        all_prec, all_rec, all_f05 = [], [], []
+        for sid in val_s1_ids:
+            tr = truth_map.get(sid, set())
+            pr = pred_map.get(sid, set())
+            tp = len(tr & pr)
+            p = tp / len(pr) if pr else 0.0
+            r = tp / len(tr) if tr else 0.0
+            all_prec.append(p)
+            all_rec.append(r)
+            all_f05.append(entity_f05(tr, pr))
 
-    macro_prec = float(prec_per.mean())
-    macro_rec  = float(rec_per.mean())
-
-    # F0.5: beta=0.5 -> weights precision twice as heavily as recall
-    beta_sq = 0.25  # 0.5 ** 2
-    denom = beta_sq * macro_prec + macro_rec
-    f0_5 = (1 + beta_sq) * macro_prec * macro_rec / denom if denom > 0 else 0.0
-
-    return macro_prec, macro_rec, float(f0_5)
-
-
-# ?????????????????????????????????????????????????????????????????????????????
-# ERROR ANALYSIS
-# ?????????????????????????????????????????????????????????????????????????????
-def error_analysis(
-    val_df: pd.DataFrame,
-    proba: np.ndarray,
-    threshold: float,
-    n_examples: int = 5,
-) -> dict:
-    """
-    Identify false positives and false negatives at the chosen threshold.
-
-    Returns a dict with:
-      - fp_count : total false positive pairs
-      - fn_count : total false negative pairs
-      - fp_examples : list of up to n_examples FP rows (as dicts)
-      - fn_examples : list of up to n_examples FN rows (as dicts)
-      - fp_feature_means : mean feature values for FP pairs
-      - fn_feature_means : mean feature values for FN pairs
-    """
-    analysis_df = val_df.copy().reset_index(drop=True)
-    analysis_df["proba"] = proba
-    analysis_df["pred"]  = (proba >= threshold).astype(int)
-
-    fp_mask = (analysis_df["pred"] == 1) & (analysis_df["label"] == 0)
-    fn_mask = (analysis_df["pred"] == 0) & (analysis_df["label"] == 1)
-
-    fp_df = analysis_df[fp_mask]
-    fn_df = analysis_df[fn_mask]
-
-    # Feature means for error groups
-    feat_fp_means = (
-        fp_df[FEATURE_COLS].mean().round(6).to_dict()
-        if len(fp_df) > 0 else {}
-    )
-    feat_fn_means = (
-        fn_df[FEATURE_COLS].mean().round(6).to_dict()
-        if len(fn_df) > 0 else {}
-    )
-
-    # Sample examples
-    example_cols = ["s1_entity_id", "candidate_entity_id",
-                    "candidate_source", "label", "proba"] + FEATURE_COLS
-    available_cols = [c for c in example_cols if c in analysis_df.columns]
-
-    def to_examples(df: pd.DataFrame) -> list[dict]:
-        return (
-            df[available_cols]
-            .head(n_examples)
-            .round(6)
-            .to_dict(orient="records")
-        )
-
-    return {
-        "fp_count":         int(fp_mask.sum()),
-        "fn_count":         int(fn_mask.sum()),
-        "fp_examples":      to_examples(fp_df),
-        "fn_examples":      to_examples(fn_df),
-        "fp_feature_means": feat_fp_means,
-        "fn_feature_means": feat_fn_means,
-    }
-
-
-# ?????????????????????????????????????????????????????????????????????????????
-# MAIN PIPELINE
-# ?????????????????????????????????????????????????????????????????????????????
-def main() -> None:
-    args = parse_args()
-    t_start = time.time()
-
-    # ?? 0. Create output directories ????????????????????????????????????????
-    for d in [os.path.dirname(args.model_out),
-              os.path.dirname(args.config_out),
-              os.path.dirname(args.results),
-              os.path.dirname(args.thresh_tsv)]:
-        if d:
-            os.makedirs(d, exist_ok=True)
-
-    print()
-    print("=" * 68)
-    print("  M3 BASELINE TRAINING PIPELINE - Amazon ML Challenge 2026")
-    print("=" * 68)
-
-    # ?? 1. Load pairs ????????????????????????????????????????????????????????
-    log("Step 1/7  Load labelled pairs")
-    pairs = load_pairs(args.pairs)
-
-    # ?? 2. Load / compute features ???????????????????????????????????????????
-    log("Step 2/7  Load / compute features")
-    feat_df = load_or_compute_features(pairs, args.features, args.source_dir)
-
-    # Ensure label column is integer
-    feat_df["label"] = feat_df["label"].astype(int)
-
-    # ?? 3. Entity-level train / validation split ??????????????????????????????
-    log("Step 3/7  Entity-level split (80/20, random_state=42)")
-    train_df, val_df = entity_level_split(
-        feat_df, train_ratio=TRAIN_RATIO, random_state=RANDOM_STATE
-    )
-
-    # Verify zero overlap
-    train_s1 = set(train_df["s1_entity_id"].unique())
-    val_s1   = set(val_df["s1_entity_id"].unique())
-    assert len(train_s1 & val_s1) == 0, "CRITICAL: s1_entity_id overlap found!"
-    log(f"  OK Zero s1_entity_id overlap confirmed between train and validation.")
-
-    train_s1_count = len(train_s1)
-    val_s1_count   = len(val_s1)
-    train_pair_count = len(train_df)
-    val_pair_count   = len(val_df)
-
-    # ?? 4. Prepare feature matrices ??????????????????????????????????????????
-    log("Step 4/7  Build feature matrices")
-    X_train = train_df[FEATURE_COLS].values.astype(float)
-    y_train = train_df["label"].values.astype(int)
-    X_val   = val_df[FEATURE_COLS].values.astype(float)
-    y_val   = val_df["label"].values.astype(int)
-
-    log(f"  X_train: {X_train.shape}  |  y_train positives: {y_train.sum():,}")
-    log(f"  X_val:   {X_val.shape}    |  y_val positives:   {y_val.sum():,}")
-
-    # Sanity: no NaN in feature matrices
-    nan_train = np.isnan(X_train).sum()
-    nan_val   = np.isnan(X_val).sum()
-    if nan_train or nan_val:
-        raise ValueError(
-            f"NaN detected in feature matrices: "
-            f"train={nan_train}, val={nan_val}. "
-            f"Check features.py or the source data."
-        )
-    log("  OK No NaN values in feature matrices.")
-
-    # ?? 5. Train sklearn Pipeline ????????????????????????????????????????????
-    log("Step 5/7  Train sklearn Pipeline (StandardScaler + LogisticRegression)")
-    pipeline = Pipeline([
-        ("scaler", StandardScaler()),
-        ("clf",    LogisticRegression(random_state=RANDOM_STATE, max_iter=1000)),
-    ])
-    t_fit = time.time()
-    pipeline.fit(X_train, y_train)
-    log(f"  OK Training complete in {time.time() - t_fit:.1f}s")
-
-    # ?? 6. Threshold sweep on validation set ????????????????????????????????
-    log("Step 6/7  Threshold sweep on validation set")
-    proba_val = pipeline.predict_proba(X_val)[:, 1]
-
-    threshold_rows: list[dict] = []
-    best_f05        = -1.0
-    best_threshold  = THRESHOLDS[0]
-    best_precision  = 0.0
-    best_recall     = 0.0
-
-    print()
-    print(f"  {'Threshold':>10}  {'Precision':>10}  {'Recall':>10}  {'F0.5':>10}")
-    print("  " + "-" * 46)
-
-    for thr in THRESHOLDS:
-        prec, rec, f05 = entity_level_metrics(val_df, proba_val, thr)
-        threshold_rows.append({
-            "threshold": thr,
-            "precision": round(prec, 6),
-            "recall":    round(rec,  6),
-            "f0_5":      round(f05,  6),
+        results.append({
+            "threshold": t,
+            "precision": float(np.mean(all_prec)),
+            "recall":    float(np.mean(all_rec)),
+            "f0_5":      float(np.mean(all_f05)),
         })
-        marker = " <- best" if f05 > best_f05 else ""
-        print(f"  {thr:>10.2f}  {prec:>10.6f}  {rec:>10.6f}  {f05:>10.6f}{marker}")
 
-        if f05 > best_f05:
-            best_f05       = f05
-            best_threshold = thr
-            best_precision = prec
-            best_recall    = rec
+    return pd.DataFrame(results)
 
-    print()
-    log(f"  Best threshold : {best_threshold}")
-    log(f"  Precision      : {best_precision:.6f}")
-    log(f"  Recall         : {best_recall:.6f}")
-    log(f"  F0.5           : {best_f05:.6f}")
 
-    # ?? 7. Error analysis ????????????????????????????????????????????????????
-    log("Step 7/7  Error analysis at chosen threshold")
-    err = error_analysis(val_df, proba_val, best_threshold)
-    log(f"  False positives : {err['fp_count']:,}")
-    log(f"  False negatives : {err['fn_count']:,}")
+# ─────────────────────────────────────────────────────────────────────────────
+# Main training entry-point
+# ─────────────────────────────────────────────────────────────────────────────
 
-    # ?? 8. Save artifacts ????????????????????????????????????????????????????
-    log("Saving artifacts ...")
+def train(data_dir: Path, candidates_path: Path, output_dir: Path, models_dir: Path) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    models_dir.mkdir(parents=True, exist_ok=True)
 
-    # ---- 8a. Model pickle ----
-    joblib.dump(pipeline, args.model_out)
-    log(f"  OK Model saved -> {args.model_out}")
+    # 1. Load data
+    s1, s2, s3, gt = load_sources(data_dir)
+    truth_map = build_truth_map(gt)
 
-    # ---- 8b. Threshold sweep TSV ----
-    thresh_df = pd.DataFrame(threshold_rows)
-    thresh_df.to_csv(args.thresh_tsv, sep="\t", index=False)
-    log(f"  OK Threshold table -> {args.thresh_tsv}")
+    # 2. Load candidate pairs (M4 artifact)
+    candidates = pd.read_csv(candidates_path, sep="\t")
+    print(f"Candidate rows: {len(candidates):,}")
 
-    # ---- 8c. model_config.json ----
+    # 3. Build labeled pair rows
+    pair_df = build_pair_rows(candidates, s1, s2, s3, truth_map)
+    print(f"Labeled pairs : {len(pair_df):,}  "
+          f"(positive={pair_df['label'].sum():,}, "
+          f"negative={(pair_df['label'] == 0).sum():,})")
+
+    # 4. Entity-level split
+    train_df, val_df = entity_split(pair_df)
+    train_s1 = set(train_df["source1_entity_id"].unique())
+    val_s1   = set(val_df["source1_entity_id"].unique())
+    print(f"Train S1={len(train_s1):,}  pairs={len(train_df):,}")
+    print(f"Val   S1={len(val_s1):,}   pairs={len(val_df):,}")
+    assert train_s1 & val_s1 == set(), "Entity split leak!"
+
+    # 5. Feature extraction
+    X_train = build_feature_matrix(train_df).values
+    y_train = train_df["label"].values
+    X_val   = build_feature_matrix(val_df).values
+    y_val   = val_df["label"].values
+
+    # 6. Train baseline: StandardScaler + LogisticRegression
+    scaler = StandardScaler()
+    X_train_sc = scaler.fit_transform(X_train)
+    X_val_sc   = scaler.transform(X_val)
+
+    model = LogisticRegression(random_state=RANDOM_STATE, max_iter=1000)
+    model.fit(X_train_sc, y_train)
+    print("Model trained.")
+
+    # 7. Threshold sweep on validation set
+    val_proba = model.predict_proba(X_val_sc)[:, 1]
+    sweep_df = threshold_sweep(val_df, val_proba, truth_map)
+    best_row = sweep_df.loc[sweep_df["f0_5"].idxmax()]
+    best_threshold = float(best_row["threshold"])
+    best_f05       = float(best_row["f0_5"])
+    best_prec      = float(best_row["precision"])
+    best_rec       = float(best_row["recall"])
+
+    print(f"\nThreshold sweep results:")
+    print(sweep_df.to_string(index=False))
+    print(f"\nSelected threshold : {best_threshold:.2f}")
+    print(f"Validation F0.5    : {best_f05:.4f}")
+    print(f"Validation Precision: {best_prec:.4f}")
+    print(f"Validation Recall  : {best_rec:.4f}")
+
+    # 8. Save model
+    model_path = models_dir / "matcher.pkl"
+    with open(model_path, "wb") as f:
+        pickle.dump((scaler, model), f)
+    print(f"\nModel saved → {model_path}")
+
+    # 9. Save model config
     config = {
-        "model_type":          "LogisticRegression",
-        "feature_names":       FEATURE_COLS,
-        "threshold":           best_threshold,
-        "random_seed":         RANDOM_STATE,
-        "train_s1_count":      train_s1_count,
-        "validation_s1_count": val_s1_count,
-        "train_pair_count":    train_pair_count,
-        "validation_pair_count": val_pair_count,
-        "precision":           round(best_precision, 6),
-        "recall":              round(best_recall,    6),
-        "f0_5":                round(best_f05,       6),
-        "baseline_version":    BASELINE_VERSION,
+        "model_type":            "StandardScaler + LogisticRegression",
+        "feature_names":         FEATURE_NAMES,
+        "threshold":             best_threshold,
+        "random_seed":           RANDOM_STATE,
+        "train_s1_count":        len(train_s1),
+        "validation_s1_count":   len(val_s1),
+        "train_pair_count":      int(len(train_df)),
+        "validation_pair_count": int(len(val_df)),
+        "precision":             round(best_prec, 6),
+        "recall":                round(best_rec, 6),
+        "f0_5":                  round(best_f05, 6),
+        "baseline_version":      "1.0",
+        "metric":                "entity-level macro F0.5 (competition official)",
+        "candidates_source":     str(candidates_path),
     }
-    with open(args.config_out, "w", encoding="utf-8") as f:
+    config_path = models_dir / "model_config.json"
+    with open(config_path, "w") as f:
         json.dump(config, f, indent=2)
-    log(f"  OK Model config -> {args.config_out}")
+    print(f"Config saved  → {config_path}")
 
-    # ---- 8d. baseline_training_results.json ----
-    results = {
-        **config,
-        "elapsed_seconds":     round(time.time() - t_start, 2),
-        "threshold_sweep":     threshold_rows,
-        "error_analysis":      err,
-        "sklearn_pipeline":    str(pipeline),
-    }
-    with open(args.results, "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=2)
-    log(f"  OK Detailed results -> {args.results}")
+    # 10. Save training results
+    train_results_path = output_dir / "baseline_training_results.json"
+    with open(train_results_path, "w") as f:
+        json.dump(config, f, indent=2)
 
-    # ?? Final summary ????????????????????????????????????????????????????????
-    elapsed = time.time() - t_start
-    print()
-    print("=" * 68)
-    print("  TRAINING COMPLETE")
-    print("=" * 68)
-    print(f"  Train S1 entities     : {train_s1_count:,}")
-    print(f"  Validation S1 entities: {val_s1_count:,}")
-    print(f"  Train pairs           : {train_pair_count:,}")
-    print(f"  Validation pairs      : {val_pair_count:,}")
-    print()
-    print(f"  Selected threshold    : {best_threshold}")
-    print(f"  Precision             : {best_precision:.6f}")
-    print(f"  Recall                : {best_recall:.6f}")
-    print(f"  F0.5                  : {best_f05:.6f}")
-    print()
-    print(f"  Model artifact        : {os.path.abspath(args.model_out)}")
-    print(f"  Config                : {os.path.abspath(args.config_out)}")
-    print(f"  Threshold table       : {os.path.abspath(args.thresh_tsv)}")
-    print(f"  Detailed results      : {os.path.abspath(args.results)}")
-    print(f"  Elapsed               : {elapsed:.1f}s")
-    print("=" * 68)
+    # 11. Save threshold sweep table
+    sweep_path = output_dir / "baseline_threshold_results.tsv"
+    sweep_df.to_csv(sweep_path, sep="\t", index=False)
+    print(f"Sweep saved   → {sweep_path}")
+
+    print("\nTraining complete.")
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Train baseline matcher.")
+    parser.add_argument("--data-dir",   default="dataset/train",   help="Directory with train TSVs")
+    parser.add_argument("--candidates", default="output/candidate_pairs.tsv", help="M4 candidate pairs TSV")
+    parser.add_argument("--output-dir", default="output",  help="Directory for result artifacts")
+    parser.add_argument("--models-dir", default="models",  help="Directory for model artifacts")
+    args = parser.parse_args()
+
+    train(
+        data_dir=Path(args.data_dir),
+        candidates_path=Path(args.candidates),
+        output_dir=Path(args.output_dir),
+        models_dir=Path(args.models_dir),
+    )
