@@ -1,10 +1,10 @@
-# Amazon ML Challenge 2026 — gitignore
+# Amazon ML Challenge 2026 — .gitignore
 
 # ── Datasets (never commit raw data) ─────────────────────────────────────────
 dataset/
 *.tsv
 *.csv
-# Exception: keep sample/stub output files that are tracked deliberately
+# Exception: keep stub output files that are tracked deliberately
 !output/.gitkeep
 !output/candidate_pairs.tsv
 
@@ -24,6 +24,7 @@ models/*.onnx
 __pycache__/
 *.py[cod]
 *.pyo
+*.pyd
 .Python
 *.egg-info/
 dist/

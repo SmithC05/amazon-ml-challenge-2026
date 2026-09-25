@@ -223,3 +223,102 @@ def normalize_address(value) -> str:
     if not text:
         return text
     return _apply_token_map(text, _ADDRESS_ABBREV_MAP)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Batch preprocessing — DataFrame-level entry point
+# ──────────────────────────────────────────────────────────────────────────────
+
+_OUTPUT_COLUMNS = [
+    "entity_id",
+    "business_name",
+    "business_address",
+    "country",
+    "name_norm",
+    "address_norm",
+    "name_tokens",
+    "address_tokens",
+    "name_token_count",
+    "address_token_count",
+    "name_length",
+    "address_length",
+    "name_digits",
+    "address_digits",
+]
+
+
+def preprocess_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Apply the full preprocessing pipeline to a source DataFrame in one batch pass.
+
+    Each source record (S1, S2, or S3) is processed exactly once.  The returned
+    DataFrame is a new object — the input is never mutated.
+
+    Args:
+        df: DataFrame with at least these columns:
+              entity_id, business_name, business_address, country.
+            Extra columns are silently ignored.
+
+    Returns:
+        A new DataFrame with exactly 14 columns in this fixed order:
+
+          entity_id         – preserved from input (no change)
+          business_name     – preserved from input (no change)
+          business_address  – preserved from input (no change)
+          country           – preserved from input (no change)
+          name_norm         – normalize_name(business_name)
+          address_norm      – normalize_address(business_address)
+          name_tokens       – whitespace-split tokens of name_norm (list)
+          address_tokens    – whitespace-split tokens of address_norm (list)
+          name_token_count  – len(name_tokens)
+          address_token_count – len(address_tokens)
+          name_length       – character length of name_norm
+          address_length    – character length of address_norm
+          name_digits       – count of digit characters in name_norm
+          address_digits    – count of digit characters in address_norm
+
+    Notes:
+        • NaN / None in business_name or business_address are handled safely by
+          normalize_name() / normalize_address(), which return "" for null inputs.
+        • name_tokens / address_tokens are Python lists ([] for empty strings).
+        • This function does not perform candidate-pair generation, fuzzy
+          matching, blocking, or feature engineering beyond the fields listed
+          above.
+        • Country is treated as a free-form string; no country list is assumed.
+    """
+    # Work on a copy of only the four raw columns so the input is never mutated.
+    out = df[["entity_id", "business_name", "business_address", "country"]].copy()
+
+    # ── Normalized strings (one call per record via map) ──────────────────────
+    # normalize_name / normalize_address are scalar functions validated in M2.
+    # .map() is used in preference to .apply() for scalar string → string
+    # transforms: it avoids the overhead of constructing a Series per call.
+    out["name_norm"]    = out["business_name"].map(normalize_name)
+    out["address_norm"] = out["business_address"].map(normalize_address)
+
+    # ── Token lists ───────────────────────────────────────────────────────────
+    # normalize_name / normalize_address always return str (never NaN), so
+    # str.split() always returns a list ([] for empty strings).
+    out["name_tokens"]    = out["name_norm"].str.split()
+    out["address_tokens"] = out["address_norm"].str.split()
+
+    # ── Token counts ─────────────────────────────────────────────────────────
+    out["name_token_count"]    = out["name_tokens"].str.len()
+    out["address_token_count"] = out["address_tokens"].str.len()
+
+    # ── Character lengths ────────────────────────────────────────────────────
+    out["name_length"]    = out["name_norm"].str.len()
+    out["address_length"] = out["address_norm"].str.len()
+
+    # ── Digit counts ─────────────────────────────────────────────────────────
+    # Count digit characters in the normalized string.
+    # sum(c.isdigit() for c in "") == 0, so empty strings are safe.
+    out["name_digits"]    = out["name_norm"].apply(
+        lambda s: sum(c.isdigit() for c in s)
+    )
+    out["address_digits"] = out["address_norm"].apply(
+        lambda s: sum(c.isdigit() for c in s)
+    )
+
+    # Return columns in the required fixed order.
+    return out[_OUTPUT_COLUMNS]

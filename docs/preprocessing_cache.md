@@ -1,153 +1,311 @@
 # Preprocessing Cache — `src/cache.py`
-## Amazon ML Challenge 2026
+
+**Amazon ML Challenge 2026 — Preprocessing & Caching Reference**
+
+This document describes the preprocessing-cache architecture, the cached schema,
+and the API used by downstream team members to load preprocessed source records.
 
 ---
 
-## Purpose
-
-`src/cache.py` builds a **one-time Parquet cache** of M2-normalized source records.
-
-Every team member's code (M3 feature extraction, M4 candidate generation, your advanced experiments) loads from this cache instead of re-running the normalization pipeline on every experiment iteration.
-
----
-
-## Why this matters
+## Why Caching Is Needed
 
 | Without cache | With cache |
 |---|---|
-| Each experiment re-normalizes 300k+ records | Normalization runs once, result is saved |
-| `normalize_name` + `normalize_address` called millions of times per run | Sub-second Parquet column read |
-| Normalization bugs silently produce different results each run | Single canonical normalized form |
+| Each experiment re-normalizes all source records | Normalization runs once, result is saved |
+| `normalize_name` + `normalize_address` called repeatedly per run | Sub-second Parquet column read |
+| Subtle normalization inconsistencies possible across runs | Single canonical normalized form |
+
+Without caching, the normalization pipeline runs on every notebook restart and
+every experiment iteration, repeating identical work.
+
+**With caching:**
+```
+Once: reads TSV → normalises S1 → writes Parquet cache
+Experiment A: load_cache("train", "source1") → instant, no normalisation
+Experiment B: load_cache("train", "source1") → instant, no normalisation
+```
 
 ---
 
 ## Architecture
 
 ```
-Raw TSVs  (train/test_source1/2/3.tsv)
+Raw TSVs  (train_source1/2/3.tsv, test_source1/2/3.tsv)
     │
-    ▼  src/cache.py  ←  src/preprocess.py  (Member 2, unchanged)
+    ▼  src/cache.py  ←  src/preprocess.py  (M2 normalization, unchanged)
 Parquet cache  (cache/*.parquet)
     │
-    ├──▶  M4  candidate generation / blocking
-    └──▶  M3  feature extraction / training
-              (src/train.py, src/predict.py)
+    ├──▶  M4  (blocking / candidate generation)  — load_cache() only
+    └──▶  M3  (feature extraction + model)        — load_cache() only
+```
+
+**Important:** `preprocess_dataframe()` is called **once per source dataset**,
+not once per candidate pair.  The cache prevents any re-normalisation.
+
+---
+
+## Preprocessing Flow
+
+```
+RAW TSV  (e.g. /content/train_source1.tsv)
+    │
+    │  pd.read_csv(..., sep='\t', dtype=str)
+    ▼
+RAW DATAFRAME  (entity_id, business_name, business_address, country)
+    │
+    │  src.preprocess.preprocess_dataframe(df)
+    │  ├─ normalize_name(business_name)       → name_norm
+    │  ├─ normalize_address(business_address) → address_norm
+    │  ├─ name_norm.str.split()               → name_tokens
+    │  ├─ address_norm.str.split()            → address_tokens
+    │  ├─ str.len() / digit count             → length/digit fields
+    │  └─ raw columns preserved as-is
+    ▼
+PROCESSED DATAFRAME  (14 columns — see schema below)
+    │
+    │  src.cache.build_cache(...) → df.to_parquet(...)
+    ▼
+PARQUET CACHE  (cache/train_source1.parquet, ...)
+    │
+    │  src.cache.load_cache(...)  → pd.read_parquet(...)
+    ▼
+DOWNSTREAM CONSUMER  (M4 blocking, M3 features/model)
 ```
 
 ---
 
-## Cache layout
+## Cached Datasets
+
+Six Parquet files are produced — one per (split, source) combination:
 
 ```
 cache/
-  train_source1.parquet
-  train_source2.parquet
-  train_source3.parquet
-  test_source1.parquet     (written only when test data is present)
-  test_source2.parquet
-  test_source3.parquet
+├── train_source1.parquet
+├── train_source2.parquet
+├── train_source3.parquet
+├── test_source1.parquet
+├── test_source2.parquet
+└── test_source3.parquet
 ```
 
-> Cache files are excluded from git via `.gitignore`. Each team member builds their own local cache.
+> Cache files are excluded from git via `.gitignore`. Each team member builds
+> their own local cache.
+
+Ground truth (`train_ground_truth.tsv`) is **not** cached here.
 
 ---
 
-## Schema (per Parquet file)
+## Cached Columns (Schema — 14 columns per file)
 
-All original TSV columns are preserved, plus:
+| # | Column | Type | Description |
+|---|---|---|---|
+| 1 | `entity_id` | str | Entity identifier (e.g. `S1-00001`) — raw, unchanged |
+| 2 | `business_name` | str | Original business name — raw, unchanged |
+| 3 | `business_address` | str | Original business address — raw, unchanged |
+| 4 | `country` | str | Country string — raw, unchanged (free-form, no fixed list) |
+| 5 | `name_norm` | str | `normalize_name(business_name)` — M2 validated normalization |
+| 6 | `address_norm` | str | `normalize_address(business_address)` — M2 validated normalization |
+| 7 | `name_tokens` | list[str] | Whitespace-split tokens of `name_norm` |
+| 8 | `address_tokens` | list[str] | Whitespace-split tokens of `address_norm` |
+| 9 | `name_token_count` | int | `len(name_tokens)` |
+| 10 | `address_token_count` | int | `len(address_tokens)` |
+| 11 | `name_length` | int | Character length of `name_norm` |
+| 12 | `address_length` | int | Character length of `address_norm` |
+| 13 | `name_digits` | int | Count of digit characters in `name_norm` |
+| 14 | `address_digits` | int | Count of digit characters in `address_norm` |
 
-| Column | Type | Description |
-|---|---|---|
-| `entity_id` | str | Original entity ID |
-| `business_name` | str | Raw business name (unchanged) |
-| `business_address` | str | Raw address (unchanged) |
-| `country` | str | Raw country (unchanged) |
-| `business_name_norm` | str | `normalize_name(business_name)` |
-| `business_address_norm` | str | `normalize_address(business_address)` |
-| `name_tokens` | int | Token count of normalized name |
-| `address_tokens` | int | Token count of normalized address |
-| `address_is_empty` | int8 | 1 if normalized address == `""` |
+**Notes:**
+- `NaN` / `None` inputs produce `""` for normalized strings, `[]` for token
+  lists, and `0` for all numeric derived fields.  No errors are raised.
+- `name_tokens` and `address_tokens` are stored as pyarrow variable-length list
+  arrays; they are read back as numpy arrays by default.  Call `.tolist()` if a
+  Python list is needed.
 
 ---
 
-## Usage
+## Building the Cache
 
-### Build cache (once per machine)
+### Python API
 
 ```python
-from pathlib import Path
 from src.cache import build_cache
 
-build_cache(
-    data_dir=Path("dataset/train"),
-    cache_dir=Path("cache"),
-    split="train",
-    force=False,          # True to rebuild
+# Build a single source (idempotent — skips if already built)
+result = build_cache(
+    split     = "train",       # "train" or "test"
+    source    = "source1",     # "source1", "source2", or "source3"
+    data_dir  = "/content",    # directory containing the TSV files
+    cache_dir = "cache",       # output directory (created if absent)
+    force     = False,         # True to force rebuild even if cached
 )
+
+# Build all six sources in one loop
+for split in ["train", "test"]:
+    for source in ["source1", "source2", "source3"]:
+        r = build_cache(split, source, data_dir="/content", cache_dir="cache")
+        print(split, source, r["status"], r.get("rows"))
 ```
 
-Or via CLI:
+### CLI
 
 ```bash
-python src/cache.py \
-    --data-dir  dataset/train \
-    --cache-dir cache \
-    --split     train \
-    --validate
+# Build all three train sources
+python src/cache.py --data-dir /content --cache-dir cache --split train --source all
+
+# Force rebuild of one source
+python src/cache.py --data-dir /content --cache-dir cache --split train --source source1 --force
 ```
 
-### Load in M3 training
+---
 
-```python
-from src.cache import load_all_cache
-s1, s2, s3 = load_all_cache("cache", split="train")
-```
+## Loading the Cache
 
-Or pass `--cache-dir cache` to `src/train.py` — it will auto-detect and use the cache:
-
-```bash
-python src/train.py \
-    --data-dir  dataset/train \
-    --candidates output/candidate_pairs.tsv \
-    --cache-dir cache
-```
-
-### Load in M4 blocking
+### Load a single source
 
 ```python
 from src.cache import load_cache
-s1 = load_cache("cache", "train", "source1")
-s2 = load_cache("cache", "train", "source2")
-s3 = load_cache("cache", "train", "source3")
+
+df = load_cache("train", "source1", cache_dir="cache")
+# df is a DataFrame with 14 columns, shape (N, 14)
 ```
 
-### Validate cache integrity
+### Load all three sources at once
+
+```python
+from src.cache import load_all_cache
+
+s1, s2, s3 = load_all_cache("cache", split="train")
+```
+
+### Load only selected columns (faster)
+
+```python
+df = load_cache("train", "source1", cache_dir="cache",
+                columns=["entity_id", "name_norm", "address_norm"])
+```
+
+---
+
+## Cache Validation
+
+### Existence check
+
+```python
+from src.cache import cache_exists
+
+if cache_exists("train", "source1", "cache"):
+    df = load_cache("train", "source1", "cache")
+else:
+    build_cache("train", "source1", data_dir="/content", cache_dir="cache")
+    df = load_cache("train", "source1", "cache")
+```
+
+### Structural validation (7 checks)
 
 ```python
 from src.cache import validate_cache
-validate_cache("dataset/train", "cache", split="train", n_check=500)
+
+val = validate_cache("train", "source1", cache_dir="cache")
+print(val["valid"])            # True / False
+print(val["rows"])             # row count
+print(val["missing_columns"])  # [] if all 14 cols present
+for check, ok in val["checks"].items():
+    print(check, "PASS" if ok else "FAIL")
 ```
 
-Samples 500 rows, re-normalizes fresh, and asserts results match the cache.
+| Check | Description |
+|---|---|
+| `file_exists` | Parquet file is on disk |
+| `parquet_readable` | File can be read without errors |
+| `all_14_columns` | All 14 required columns are present |
+| `entity_id_present` | `entity_id` column exists |
+| `raw_columns_present` | `business_name`, `business_address`, `country` present |
+| `norm_columns_present` | `name_norm`, `address_norm` present |
+| `non_empty` | At least one row |
 
 ---
 
-## Timing benchmark
+## Downstream Usage
 
-*(To be filled after first Colab run)*
+```
+M2 (preprocessing):
+    RAW TSV → preprocess_dataframe() → PARQUET CACHE
+
+M4 (blocking / candidate generation):
+    load_cache("train", "source1")  → generate candidates
+    load_cache("train", "source2")  ┘
+    load_cache("train", "source3")  ┘
+
+M3 (feature engineering + model):
+    load_all_cache("cache", "train")  →  pair features  →  classifier  →  scores
+```
+
+**Contract for M4 and M3:**
+
+- Always call `load_cache()` or `load_all_cache()` — do not re-read or re-normalise the raw TSV.
+- Use `name_norm` / `address_norm` for all string comparisons.
+- Use `name_tokens` / `address_tokens` for set-based similarity (Jaccard, overlap).
+- Use `name_token_count`, `name_length`, `name_digits`, etc. as numeric features directly.
+- Do not modify or overwrite the Parquet files.
+
+---
+
+## Timing Benchmark
+
+Reference timings measured locally on synthetic data (S1=15k, S2=20k, S3=18k rows):
 
 | Operation | Time |
 |---|---|
-| Raw normalization (S1+S2+S3, ~330k rows) | TBD |
-| Cache build (normalize + write Parquet) | TBD |
-| Cache load (all three sources) | TBD |
-| Speedup factor | TBD |
+| Train cache build (all 3 sources) | ~2.13 s |
+| Test cache build (all 3 sources) | ~2.12 s |
+| Cache load (avg per source) | ~0.059 s |
+| Speedup vs. TSV read + preprocess | **12.19×** |
+
+> Run `notebooks/02_preprocessing_cache.ipynb` on Colab with the real data for
+> production timings.
 
 ---
 
-## Design constraints
+## Cache and Git
+
+The `cache/` directory and all `*.parquet` files are listed in `.gitignore`
+and **must not be committed to GitHub**.
+
+```gitignore
+cache/
+*.parquet
+```
+
+To rebuild the cache in a fresh Colab session:
+
+```python
+from src.cache import build_cache
+
+for split in ["train", "test"]:
+    for source in ["source1", "source2", "source3"]:
+        build_cache(split, source, data_dir="/content", cache_dir="cache")
+```
+
+---
+
+## Normalization Reference
+
+Normalization applied inside `preprocess_dataframe()` is the M2-validated
+pipeline from `src/preprocess.py`. Refer to `docs/dataset_dictionary.md` for
+the full rule table.
+
+| Function | Applied to | Rules |
+|---|---|---|
+| `normalize_text()` | base pipeline (both fields) | NFKC → lowercase → punctuation → whitespace |
+| `normalize_name()` | `business_name` → `name_norm` | base + legal-suffix rules |
+| `normalize_address()` | `business_address` → `address_norm` | base + street-type abbreviation rules |
+
+---
+
+## Design Constraints
 
 - Normalization is **never reimplemented** in `cache.py`. Only `preprocess.py` functions are called.
 - Raw columns (`business_name`, `business_address`) are preserved unchanged alongside normalized versions.
 - Cache files are `.gitignore`d — never committed to the repo.
 - `pyarrow` + snappy compression are used for fast columnar reads.
+- Country is treated as a free-form string; no fixed country list is assumed.
