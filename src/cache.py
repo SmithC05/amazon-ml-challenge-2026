@@ -55,7 +55,14 @@ from typing import Literal, Union
 
 import pandas as pd
 
-from src.preprocess import preprocess_dataframe, _OUTPUT_COLUMNS
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # repo root
+_sys.path.insert(0, str(Path(__file__).resolve().parent))         # src/
+
+try:
+    from src.preprocess import preprocess_dataframe, _OUTPUT_COLUMNS  # package import
+except ModuleNotFoundError:
+    from preprocess import preprocess_dataframe, _OUTPUT_COLUMNS       # script import
 
 
 # ──────────────────────────────────────────────────────────────────────────────
