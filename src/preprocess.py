@@ -96,7 +96,6 @@ def _apply_token_map(text: str, token_map: dict) -> str:
 _LEGAL_SUFFIX_MAP: dict = {
     # Multi-token first
     "pvt ltd":                  "private limited",
-    "pvt. ltd.":                "private limited",   # punctuation already gone
     # Single-token
     "pvt":                      "private",
     "ltd":                      "limited",

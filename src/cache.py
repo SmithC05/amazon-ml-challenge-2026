@@ -149,6 +149,7 @@ def build_cache(
     data_dir: Union[str, Path] = "/content",
     cache_dir: Union[str, Path] = "cache",
     force: bool = False,
+    chunksize: int | None = None,
 ) -> dict:
     """
     Preprocess a source TSV and save it as a Parquet cache file.
@@ -172,6 +173,20 @@ def build_cache(
         cache_dir: Directory in which to write the Parquet file.
                    Created automatically if it does not exist.
         force:     If True, rebuild even if the cache file already exists.
+        chunksize: Optional integer.  When None (default), the entire TSV is
+                   read into memory at once before preprocessing — this is the
+                   original behavior and is unchanged.
+
+                   When set to a positive integer (e.g. 500_000), the TSV is
+                   read and preprocessed one chunk at a time.  Each preprocessed
+                   chunk is written to Parquet incrementally using PyArrow's
+                   ParquetWriter so that peak RAM is bounded to one chunk rather
+                   than the entire file.  The final Parquet file is byte-for-byte
+                   equivalent in schema and semantically equivalent in content to
+                   the non-chunked output.  Downstream load_cache() and
+                   validate_cache() calls require no changes.
+
+                   Recommended value for the competition sources: 500_000.
 
     Returns:
         A dict with keys:
@@ -204,17 +219,46 @@ def build_cache(
         # Ensure cache directory exists.
         cache.parent.mkdir(parents=True, exist_ok=True)
 
-        # Read source TSV.
-        df_raw = pd.read_csv(tsv, sep="\t", dtype=str)
+        if chunksize is None:
+            # ── Original whole-file path (unchanged behavior) ──────────────
+            df_raw = pd.read_csv(tsv, sep="\t", dtype=str)
+            df_processed = preprocess_dataframe(df_raw)
+            df_processed.to_parquet(
+                cache, index=False, engine="pyarrow", compression="snappy"
+            )
+            result["rows"] = len(df_processed)
 
-        # Preprocess (normalization happens here — once per record).
-        df_processed = preprocess_dataframe(df_raw)
+        else:
+            # ── Chunked path: bounded peak RAM ─────────────────────────────
+            # Uses PyArrow's ParquetWriter so we never hold more than one
+            # preprocessed chunk in memory simultaneously.
+            import pyarrow as pa
+            import pyarrow.parquet as pq
 
-        # Persist as Parquet.
-        df_processed.to_parquet(cache, index=False, engine="pyarrow", compression="snappy")
+            writer = None
+            total_rows = 0
+            try:
+                reader = pd.read_csv(
+                    tsv, sep="\t", dtype=str, chunksize=chunksize
+                )
+                for chunk_raw in reader:
+                    chunk_proc = preprocess_dataframe(chunk_raw)
+                    table = pa.Table.from_pandas(chunk_proc, preserve_index=False)
+                    if writer is None:
+                        writer = pq.ParquetWriter(
+                            cache,
+                            table.schema,
+                            compression="snappy",
+                        )
+                    writer.write_table(table)
+                    total_rows += len(chunk_proc)
+            finally:
+                if writer is not None:
+                    writer.close()
+
+            result["rows"] = total_rows
 
         result["status"] = "built"
-        result["rows"]   = len(df_processed)
 
     except Exception as exc:                   # noqa: BLE001
         result["status"] = "error"
@@ -407,6 +451,9 @@ if __name__ == "__main__":
                         help="Which source to build, or 'all' (default: all)")
     parser.add_argument("--force",     action="store_true",
                         help="Overwrite existing cache files")
+    parser.add_argument("--chunksize", type=int, default=None,
+                        help="Rows per chunk for memory-safe build "
+                             "(e.g. 500000). Default: whole-file (None).")
     args = parser.parse_args()
 
     sources = (
@@ -415,7 +462,8 @@ if __name__ == "__main__":
         else [args.source]
     )
 
-    print(f"Building cache: split={args.split}  data_dir={args.data_dir}")
+    chunk_msg = f"  chunksize={args.chunksize:,}" if args.chunksize else "  chunksize=None (whole-file)"
+    print(f"Building cache: split={args.split}  data_dir={args.data_dir}{chunk_msg}")
     for src in sources:
         r = build_cache(
             split     = args.split,
@@ -423,6 +471,7 @@ if __name__ == "__main__":
             data_dir  = args.data_dir,
             cache_dir = args.cache_dir,
             force     = args.force,
+            chunksize = args.chunksize,
         )
         rows_str = f"{r['rows']:,}" if r["rows"] else "n/a"
         print(f"  {args.split}_{src}: {r['status']}  rows={rows_str}  {r['error'] or ''}")
