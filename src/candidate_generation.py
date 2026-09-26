@@ -645,6 +645,7 @@ def generate_candidates_memory_safe(
     threads: int = 2,
     token_max_df: int = 500,
     address_max_df: int = 100,
+    prefix_max_df: int = 1000,
 ) -> tuple[int, int, int]:
     """
     Memory-capped, disk-spilling candidate generation.
@@ -860,6 +861,53 @@ def generate_candidates_memory_safe(
 
                 con.execute("DROP TABLE IF EXISTS rhs_addr_df")
 
+            if "prefix" in blocks:
+                con.execute("""
+                    CREATE OR REPLACE TABLE rhs_prefix_df AS
+                    SELECT prefix, COUNT(DISTINCT entity_id) AS df
+                    FROM (
+                        SELECT entity_id, substr(name_norm, 1, 4) AS prefix
+                        FROM rhs_view
+                        WHERE name_norm IS NOT NULL AND length(name_norm) >= 4
+                    )
+                    GROUP BY prefix
+                """)
+
+                if verbose:
+                    stats = con.execute("""
+                        SELECT
+                            COUNT(*)                                    AS total_prefixes,
+                            COUNT(*) FILTER (df <= ?)                   AS usable_prefixes,
+                            COALESCE(MAX(df), 0)                        AS max_df,
+                            COALESCE(
+                                PERCENTILE_CONT(0.5) WITHIN GROUP
+                                    (ORDER BY df),
+                                0
+                            )                                           AS median_df
+                        FROM rhs_prefix_df
+                    """, [prefix_max_df]).fetchone()
+                    total, usable, max_df_val, median_df_val = stats
+                    print(
+                        f"  Prefix index stats (max_df={prefix_max_df}): "
+                        f"total={total:,}  usable={usable:,}  "
+                        f"max_df={max_df_val:,}  median_df={median_df_val}",
+                        flush=True,
+                    )
+
+                con.execute(f"""
+                    CREATE OR REPLACE TABLE rhs_prefix_dist AS
+                    SELECT e.entity_id, e.prefix
+                    FROM (
+                        SELECT entity_id, substr(name_norm, 1, 4) AS prefix
+                        FROM rhs_view
+                        WHERE name_norm IS NOT NULL AND length(name_norm) >= 4
+                    ) e
+                    JOIN rhs_prefix_df d ON e.prefix = d.prefix
+                    WHERE d.df <= {prefix_max_df}
+                """)
+
+                con.execute("DROP TABLE IF EXISTS rhs_prefix_df")
+
             if "country_token" in blocks:
                 con.execute("""
                     CREATE OR REPLACE TABLE rhs_country_dist AS
@@ -931,15 +979,18 @@ def generate_candidates_memory_safe(
                         elif block_name == "prefix":
                             query = f"""
                                 COPY (
-                                    WITH s1_chunk AS ({chunk_cte})
+                                    WITH s1_chunk AS ({chunk_cte}),
+                                    s1_pref AS (
+                                        SELECT entity_id, substr(name_norm, 1, 4) AS prefix
+                                        FROM s1_chunk
+                                        WHERE name_norm IS NOT NULL AND length(name_norm) >= 4
+                                    )
                                     SELECT DISTINCT
-                                        s1.entity_id          AS source1_entity_id,
-                                        rhs.entity_id         AS candidate_entity_id
-                                    FROM s1_chunk s1
-                                    JOIN rhs_view rhs
-                                      ON substr(s1.name_norm, 1, 4) = substr(rhs.name_norm, 1, 4)
-                                    WHERE s1.name_norm  IS NOT NULL AND length(s1.name_norm)  >= 4
-                                      AND rhs.name_norm IS NOT NULL AND length(rhs.name_norm) >= 4
+                                        s1_pref.entity_id             AS source1_entity_id,
+                                        rhs_prefix_dist.entity_id     AS candidate_entity_id
+                                    FROM s1_pref
+                                    JOIN rhs_prefix_dist
+                                      ON s1_pref.prefix = rhs_prefix_dist.prefix
                                 ) TO '{out_path}' (FORMAT PARQUET)
                             """
                             con.execute(query)
