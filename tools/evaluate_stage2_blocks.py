@@ -141,6 +141,7 @@ def main():
     parser.add_argument("--output-dir", required=True, help="Directory to save intermediate and union TSVs")
     parser.add_argument("--n-s1", type=int, default=10000, help="Number of S1 rows to evaluate")
     parser.add_argument("--max-df", nargs="+", type=int, default=[500, 1000], help="token_max_df thresholds to sweep")
+    parser.add_argument("--address-max-df", nargs="+", type=int, default=[], help="address_max_df thresholds to sweep")
     args = parser.parse_args()
 
     cache_dir = Path(args.cache_dir)
@@ -205,6 +206,49 @@ def main():
         block_metrics[b] = metrics
         
         print(f"Done in {elapsed:.1f}s. Recall: {metrics['recall']:.2%}, Pairs: {metrics['cand_pairs']:,}")
+
+    # 2b. Run address blocks if specific thresholds provided
+    address_metrics = {}
+    if args.address_max_df:
+        print("\n--- ADDRESS THRESHOLD BENCHMARK ---")
+        for amdf in args.address_max_df:
+            b = f"address_{amdf}"
+            print(f"\n--- Running block: {b} ---")
+            out_tsv = out_dir / f"block_{b}.tsv"
+            t0 = time.time()
+            rss_before = _rss_gb()
+            
+            generate_candidates_memory_safe(
+                split="train",
+                cache_dir=mini_cache,
+                out_file=out_tsv,
+                blocks=["address"],
+                verbose=False,
+                chunk_size=10_000,
+                threads=2,
+                address_max_df=amdf,
+                db_path=out_dir / "m4_work.duckdb"
+            )
+            
+            elapsed = time.time() - t0
+            rss_after = _rss_gb()
+            metrics = _evaluate_tsv(out_tsv, truth, s1_ids)
+            metrics['elapsed'] = elapsed
+            metrics['rss_delta'] = (rss_after - rss_before) if rss_before and rss_after else 0.0
+            address_metrics[b] = metrics
+            
+            print(f"Done in {elapsed:.1f}s. Recall: {metrics['recall']:.2%}, Pairs: {metrics['cand_pairs']:,}")
+            print(f"  candidate pairs: {metrics['cand_pairs']:,}")
+            print(f"  average candidates per S1: {metrics['avg_per_s1']:.1f}")
+            print(f"  maximum candidates per S1: {metrics['max_per_s1']:,}")
+            print(f"  S1 with >=1 candidate: {metrics['s1_with_cands']:,}")
+            print(f"  total ground-truth matches (S2 + S3): {metrics['total_gt']:,}")
+            print(f"  true matches found: {metrics['found']:,}")
+            print(f"  true matches lost: {metrics['lost']:,}")
+            print(f"  candidate recall: {metrics['recall']:.2%}")
+            print(f"  S1 with all true matches recovered: {metrics['s1_fully_recovered']:,}")
+            print(f"  runtime: {elapsed:.1f}s")
+            print(f"  RSS delta: {metrics['rss_delta']:.2f}GB")
 
     # 3. Run token blocks
     for mdf in args.max_df:

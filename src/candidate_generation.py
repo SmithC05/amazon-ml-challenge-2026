@@ -644,6 +644,7 @@ def generate_candidates_memory_safe(
     memory_limit: str = "6GB",
     threads: int = 2,
     token_max_df: int = 500,
+    address_max_df: int = 100,
 ) -> tuple[int, int, int]:
     """
     Memory-capped, disk-spilling candidate generation.
@@ -810,8 +811,8 @@ def generate_candidates_memory_safe(
 
             if "address" in blocks:
                 con.execute("""
-                    CREATE OR REPLACE TABLE rhs_addr_num AS
-                    SELECT entity_id, token
+                    CREATE OR REPLACE TABLE rhs_addr_df AS
+                    SELECT token, COUNT(DISTINCT entity_id) AS df
                     FROM (
                         SELECT entity_id,
                                unnest(string_split(address_norm, ' ')) AS token
@@ -819,7 +820,45 @@ def generate_candidates_memory_safe(
                         WHERE address_norm IS NOT NULL
                     )
                     WHERE regexp_matches(token, '[0-9]')
+                    GROUP BY token
                 """)
+
+                if verbose:
+                    stats = con.execute("""
+                        SELECT
+                            COUNT(*)                                    AS total_tokens,
+                            COUNT(*) FILTER (df <= ?)                   AS usable_tokens,
+                            COALESCE(MAX(df), 0)                        AS max_df,
+                            COALESCE(
+                                PERCENTILE_CONT(0.5) WITHIN GROUP
+                                    (ORDER BY df),
+                                0
+                            )                                           AS median_df
+                        FROM rhs_addr_df
+                    """, [address_max_df]).fetchone()
+                    total, usable, max_df_val, median_df_val = stats
+                    print(
+                        f"  Address index stats (max_df={address_max_df}): "
+                        f"total={total:,}  usable={usable:,}  "
+                        f"max_df={max_df_val:,}  median_df={median_df_val}",
+                        flush=True,
+                    )
+
+                con.execute(f"""
+                    CREATE OR REPLACE TABLE rhs_addr_num AS
+                    SELECT e.entity_id, e.token
+                    FROM (
+                        SELECT entity_id,
+                               unnest(string_split(address_norm, ' ')) AS token
+                        FROM rhs_view
+                        WHERE address_norm IS NOT NULL
+                    ) e
+                    JOIN rhs_addr_df d ON e.token = d.token
+                    WHERE regexp_matches(e.token, '[0-9]')
+                      AND d.df <= {address_max_df}
+                """)
+
+                con.execute("DROP TABLE IF EXISTS rhs_addr_df")
 
             if "country_token" in blocks:
                 con.execute("""
