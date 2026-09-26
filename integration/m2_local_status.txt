@@ -1,0 +1,119 @@
+======================================================================
+M2 LOCAL CACHE STATUS REPORT
+Generated : 2026-09-26 17:23:31
+======================================================================
+
+── GIT ──────────────────────────────────────────────────────────────
+Branch : main
+Commit : a34fa540ca14e1e950b326bd5cd604f57be69c59
+
+── MACHINE ──────────────────────────────────────────────────────────
+OS     : Windows-11-10.0.26200-SP0
+Python : 3.13.14
+RAM    : total=16.9GB  available=7.9GB
+Disk E : total=104.9GB  free=33.5GB
+
+── PACKAGE VERSIONS ─────────────────────────────────────────────────
+pandas   : 3.0.3
+pyarrow  : 25.0.1
+sklearn  : 1.9.0
+duckdb   : 1.5.5
+
+── RAW DATASET LOCATIONS ────────────────────────────────────────────
+TRAIN_DIR : E:\Amazon\amazon-ml-challenge-2026\dataset\train
+TEST_DIR  : E:\Amazon\amazon-ml-challenge-2026\dataset\test
+
+  Train files:
+    train_ground_truth.tsv  (127.0 MB)
+    train_source1.tsv  (210.1 MB)
+    train_source2.tsv  (489.3 MB)
+    train_source3.tsv  (503.7 MB)
+
+  Test files:
+    test_source1.tsv  (175.0 MB)
+    test_source2.tsv  (509.5 MB)
+    test_source3.tsv  (506.0 MB)
+
+── CACHE LOCATION ───────────────────────────────────────────────────
+CACHE_DIR : E:\Amazon\amazon-ml-challenge-2026\dataset\processed\m2_cache
+
+── CACHE FILES — ROW COUNTS & SIZES ─────────────────────────────────
+  train_source1           rows= 2,206,821  size=  360.6MB  PASS  expected=2,206,821 ✓
+  train_source2           rows= 5,034,616  size=  906.5MB  PASS  expected=5,034,616 ✓
+  train_source3           rows= 5,285,603  size=  930.6MB  PASS  expected=5,285,603 ✓
+  test_source1            rows= 1,732,544  size=  293.2MB  PASS
+  test_source2            rows= 4,887,273  size=  918.8MB  PASS
+  test_source3            rows= 5,082,316  size=  921.9MB  PASS
+
+── VALIDATION CHECKS ────────────────────────────────────────────────
+  [train_source1]  PASS
+    ✓ file_exists
+    ✓ parquet_readable
+    ✓ all_14_columns
+    ✓ entity_id_present
+    ✓ raw_columns_present
+    ✓ norm_columns_present
+    ✓ non_empty
+  [train_source2]  PASS
+    ✓ file_exists
+    ✓ parquet_readable
+    ✓ all_14_columns
+    ✓ entity_id_present
+    ✓ raw_columns_present
+    ✓ norm_columns_present
+    ✓ non_empty
+  [train_source3]  PASS
+    ✓ file_exists
+    ✓ parquet_readable
+    ✓ all_14_columns
+    ✓ entity_id_present
+    ✓ raw_columns_present
+    ✓ norm_columns_present
+    ✓ non_empty
+  [test_source1]  PASS
+    ✓ file_exists
+    ✓ parquet_readable
+    ✓ all_14_columns
+    ✓ entity_id_present
+    ✓ raw_columns_present
+    ✓ norm_columns_present
+    ✓ non_empty
+  [test_source2]  PASS
+    ✓ file_exists
+    ✓ parquet_readable
+    ✓ all_14_columns
+    ✓ entity_id_present
+    ✓ raw_columns_present
+    ✓ norm_columns_present
+    ✓ non_empty
+  [test_source3]  PASS
+    ✓ file_exists
+    ✓ parquet_readable
+    ✓ all_14_columns
+    ✓ entity_id_present
+    ✓ raw_columns_present
+    ✓ norm_columns_present
+    ✓ non_empty
+
+── PATH NOTES ───────────────────────────────────────────────────────
+  Raw TSVs are at dataset/train/ and dataset/test/ (not dataset/raw/).
+  This is the actual layout; no files were moved.
+  candidate_generation.py default --cache-dir='cache' must be overridden
+  to: E:\Amazon\amazon-ml-challenge-2026\dataset\processed\m2_cache
+  train.py and predict.py accept None default; pass --cache-dir at runtime.
+
+── NORMALIZATION CONSISTENCY ─────────────────────────────────────────
+  Spot-check (5 rows per source): ALL CONSISTENT
+
+── DOWNSTREAM LOAD CHECK ─────────────────────────────────────────────
+  load_cache() all sources: OK
+    train_source1           2,206,821 rows loaded
+    train_source2           5,034,616 rows loaded
+    train_source3           5,285,603 rows loaded
+    test_source1            1,732,544 rows loaded
+    test_source2            4,887,273 rows loaded
+    test_source3            5,082,316 rows loaded
+
+======================================================================
+M2 LOCAL CACHE: READY
+======================================================================
