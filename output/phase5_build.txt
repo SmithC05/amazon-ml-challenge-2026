@@ -1,0 +1,88 @@
+﻿Cache directory: C:\Users\Mr Sanjay Balan M\project\ml challenge\amazon-ml-challenge-2026\dataset\processed\m2_cache
+
+[COPY] train_source1: cache\train_source1.parquet ΓåÆ dataset\processed\m2_cache\train_source1.parquet
+       done in 0.2s  (360.6 MB)
+
+====================================================================
+BUILDING CACHES (chunksize=500,000) into dataset\processed\m2_cache
+====================================================================
+[SKIP] train_source1: already exists
+[BUILD] train_source2 ...
+  OK    5,034,616 rows    280.6s   17944 rows/s  883.5 MB
+[BUILD] train_source3 ...
+  OK    5,285,603 rows    306.0s   17272 rows/s  903.4 MB
+[BUILD] test_source1 ...
+  OK    1,732,544 rows     83.1s   20843 rows/s  288.3 MB
+[BUILD] test_source2 ...
+  OK    4,887,273 rows    260.7s   18750 rows/s  895.2 MB
+[BUILD] test_source3 ...
+  OK    5,082,316 rows    286.3s   17751 rows/s  895.9 MB
+
+====================================================================
+VALIDATING ALL 6 CACHES
+====================================================================
+
+  [train_source1]
+    valid:        True
+    expected rows:   2,206,821
+    parquet rows:    2,206,821  MATCH
+    tsv rows:        2,206,821  MATCH
+    schema(14):   PASS
+
+  [train_source2]
+    valid:        True
+    expected rows:   5,034,616
+    parquet rows:    5,034,616  MATCH
+    tsv rows:        5,034,616  MATCH
+    schema(14):   PASS
+
+  [train_source3]
+    valid:        True
+    expected rows:   5,285,603
+    parquet rows:    5,285,603  MATCH
+    tsv rows:        5,285,603  MATCH
+    schema(14):   PASS
+
+  [test_source1]
+    valid:        True
+    expected rows:   1,732,544
+    parquet rows:    1,732,544  MATCH
+    tsv rows:        1,732,544  MATCH
+    schema(14):   PASS
+
+  [test_source2]
+    valid:        True
+    expected rows:   4,887,273
+    parquet rows:    4,887,273  MATCH
+    tsv rows:        4,887,273  MATCH
+    schema(14):   PASS
+
+  [test_source3]
+    valid:        True
+    expected rows:   5,082,316
+    parquet rows:    5,082,316  MATCH
+    tsv rows:        5,082,316  MATCH
+    schema(14):   PASS
+
+====================================================================
+FINAL 6-CACHE STATUS TABLE
+====================================================================
+Cache                 ExpRows     PQRows  RowMatch  Schema  Valid
+-----------------------------------------------------------------
+train_source1       2,206,821  2,206,821      PASS    PASS   PASS
+train_source2       5,034,616  5,034,616      PASS    PASS   PASS
+train_source3       5,285,603  5,285,603      PASS    PASS   PASS
+test_source1        1,732,544  1,732,544      PASS    PASS   PASS
+test_source2        4,887,273  4,887,273      PASS    PASS   PASS
+test_source3        5,082,316  5,082,316      PASS    PASS   PASS
+
+====================================================================
+SUMMARY
+====================================================================
+  Caches verified: 6/6
+  PASS: 6   FAIL: 0
+  All OK: True
+
+  Cache directory: C:\Users\Mr Sanjay Balan M\project\ml challenge\amazon-ml-challenge-2026\dataset\processed\m2_cache
+
+  ALL 6 CACHES: READY

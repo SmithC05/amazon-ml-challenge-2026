@@ -1,0 +1,499 @@
+﻿python : test_build_cache_callable (test_cache_robustness.TestCacheAPIExists.test_build_cache_callable) ... ok
+At line:1 char:20
++ ... nv:PYTHONUTF8=1; python -m unittest discover -s tests -v 2>&1 | Out-F ...
++                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (test_build_cach...allable) ... ok:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+test_cache_exists_callable (test_cache_robustness.TestCacheAPIExists.test_cache_exists_callable) ... ok
+test_load_all_cache_callable (test_cache_robustness.TestCacheAPIExists.test_load_all_cache_callable) ... ok
+test_load_cache_callable (test_cache_robustness.TestCacheAPIExists.test_load_cache_callable) ... ok
+test_validate_cache_callable (test_cache_robustness.TestCacheAPIExists.test_validate_cache_callable) ... ok
+test_14_columns_match_preprocess_output_columns 
+(test_cache_robustness.TestCacheBuildLoadValidate.test_14_columns_match_preprocess_output_columns) ... ok
+test_build_reports_correct_row_count 
+(test_cache_robustness.TestCacheBuildLoadValidate.test_build_reports_correct_row_count) ... ok
+test_build_result_has_expected_keys 
+(test_cache_robustness.TestCacheBuildLoadValidate.test_build_result_has_expected_keys) ... ok
+test_build_returns_built_status (test_cache_robustness.TestCacheBuildLoadValidate.test_build_returns_built_status) ... 
+ok
+test_build_returns_no_error (test_cache_robustness.TestCacheBuildLoadValidate.test_build_returns_no_error) ... ok
+test_cache_exists_after_build (test_cache_robustness.TestCacheBuildLoadValidate.test_cache_exists_after_build) ... ok
+test_cache_not_exists_before_build 
+(test_cache_robustness.TestCacheBuildLoadValidate.test_cache_not_exists_before_build) ... ok
+test_load_all_cache_all_have_14_columns 
+(test_cache_robustness.TestCacheBuildLoadValidate.test_load_all_cache_all_have_14_columns) ... ok
+test_load_all_cache_returns_three_dataframes 
+(test_cache_robustness.TestCacheBuildLoadValidate.test_load_all_cache_returns_three_dataframes) ... ok
+test_load_cache_column_selection (test_cache_robustness.TestCacheBuildLoadValidate.test_load_cache_column_selection) 
+... ok
+test_load_cache_columns_match_schema 
+(test_cache_robustness.TestCacheBuildLoadValidate.test_load_cache_columns_match_schema) ... ok
+test_load_cache_correct_row_count (test_cache_robustness.TestCacheBuildLoadValidate.test_load_cache_correct_row_count) 
+... ok
+test_load_cache_has_14_columns (test_cache_robustness.TestCacheBuildLoadValidate.test_load_cache_has_14_columns) ... ok
+test_load_cache_returns_dataframe (test_cache_robustness.TestCacheBuildLoadValidate.test_load_cache_returns_dataframe) 
+... ok
+test_name_norm_is_string_type (test_cache_robustness.TestCacheBuildLoadValidate.test_name_norm_is_string_type) ... ok
+test_name_token_count_is_non_negative_int 
+(test_cache_robustness.TestCacheBuildLoadValidate.test_name_token_count_is_non_negative_int) ... ok
+test_name_tokens_is_list_column (test_cache_robustness.TestCacheBuildLoadValidate.test_name_tokens_is_list_column) ... 
+ok
+test_null_name_produces_empty_norm 
+(test_cache_robustness.TestCacheBuildLoadValidate.test_null_name_produces_empty_norm) ... ok
+test_raw_entity_id_preserved (test_cache_robustness.TestCacheBuildLoadValidate.test_raw_entity_id_preserved) ... ok
+test_rebuild_with_force_rebuilds (test_cache_robustness.TestCacheBuildLoadValidate.test_rebuild_with_force_rebuilds) 
+... ok
+test_rebuild_without_force_skips (test_cache_robustness.TestCacheBuildLoadValidate.test_rebuild_without_force_skips) 
+... ok
+test_validate_cache_all_checks_pass 
+(test_cache_robustness.TestCacheBuildLoadValidate.test_validate_cache_all_checks_pass) ... ok
+test_validate_cache_correct_row_count 
+(test_cache_robustness.TestCacheBuildLoadValidate.test_validate_cache_correct_row_count) ... ok
+test_validate_cache_missing_file_returns_invalid 
+(test_cache_robustness.TestCacheBuildLoadValidate.test_validate_cache_missing_file_returns_invalid) ... ok
+test_validate_cache_returns_valid (test_cache_robustness.TestCacheBuildLoadValidate.test_validate_cache_returns_valid) 
+... ok
+test_build_cache_bad_source_raises (test_cache_robustness.TestCacheErrorHandling.test_build_cache_bad_source_raises) 
+... ok
+test_build_cache_bad_split_raises (test_cache_robustness.TestCacheErrorHandling.test_build_cache_bad_split_raises) ... 
+ok
+test_build_cache_missing_tsv_returns_error_status 
+(test_cache_robustness.TestCacheErrorHandling.test_build_cache_missing_tsv_returns_error_status) ... ok
+test_cache_exists_bad_source_raises (test_cache_robustness.TestCacheErrorHandling.test_cache_exists_bad_source_raises) 
+... ok
+test_cache_exists_bad_split_raises (test_cache_robustness.TestCacheErrorHandling.test_cache_exists_bad_split_raises) 
+... ok
+test_load_cache_bad_source_raises (test_cache_robustness.TestCacheErrorHandling.test_load_cache_bad_source_raises) ... 
+ok
+test_load_cache_bad_split_raises (test_cache_robustness.TestCacheErrorHandling.test_load_cache_bad_split_raises) ... ok
+test_load_cache_missing_file_raises_filenotfound 
+(test_cache_robustness.TestCacheErrorHandling.test_load_cache_missing_file_raises_filenotfound) ... ok
+test_validate_cache_bad_source_raises 
+(test_cache_robustness.TestCacheErrorHandling.test_validate_cache_bad_source_raises) ... ok
+test_validate_cache_bad_split_raises 
+(test_cache_robustness.TestCacheErrorHandling.test_validate_cache_bad_split_raises) ... ok
+test_cache_path_in_correct_directory (test_cache_robustness.TestCacheNaming.test_cache_path_in_correct_directory) ... 
+ok
+test_cache_path_test_source1 (test_cache_robustness.TestCacheNaming.test_cache_path_test_source1) ... ok
+test_cache_path_test_source2 (test_cache_robustness.TestCacheNaming.test_cache_path_test_source2) ... ok
+test_cache_path_test_source3 (test_cache_robustness.TestCacheNaming.test_cache_path_test_source3) ... ok
+test_cache_path_train_source1 (test_cache_robustness.TestCacheNaming.test_cache_path_train_source1) ... ok
+test_cache_path_train_source2 (test_cache_robustness.TestCacheNaming.test_cache_path_train_source2) ... ok
+test_cache_path_train_source3 (test_cache_robustness.TestCacheNaming.test_cache_path_train_source3) ... ok
+test_source_files_covers_all_six (test_cache_robustness.TestCacheNaming.test_source_files_covers_all_six) ... ok
+test_tsv_path_test_source1 (test_cache_robustness.TestCacheNaming.test_tsv_path_test_source1) ... ok
+test_tsv_path_train_source1 (test_cache_robustness.TestCacheNaming.test_tsv_path_train_source1) ... ok
+test_build_test_cache (test_cache_robustness.TestCacheTestSplit.test_build_test_cache) ... ok
+test_test_and_train_caches_are_independent 
+(test_cache_robustness.TestCacheTestSplit.test_test_and_train_caches_are_independent)
+Building test cache must not create a train cache file. ... ok
+test_test_cache_exists_after_build (test_cache_robustness.TestCacheTestSplit.test_test_cache_exists_after_build) ... ok
+test_test_cache_has_correct_schema (test_cache_robustness.TestCacheTestSplit.test_test_cache_has_correct_schema) ... ok
+test_test_validate_returns_valid (test_cache_robustness.TestCacheTestSplit.test_test_validate_returns_valid) ... ok
+test_chunked_address_norm_matches_nochunked 
+(test_cache_robustness.TestChunkedBuildCompat.test_chunked_address_norm_matches_nochunked) ... ok
+test_chunked_name_norm_matches_nochunked 
+(test_cache_robustness.TestChunkedBuildCompat.test_chunked_name_norm_matches_nochunked) ... ok
+test_chunked_row_count_matches_nochunked 
+(test_cache_robustness.TestChunkedBuildCompat.test_chunked_row_count_matches_nochunked) ... ok
+test_chunked_schema_matches_nochunked 
+(test_cache_robustness.TestChunkedBuildCompat.test_chunked_schema_matches_nochunked) ... ok
+test_chunked_status_built (test_cache_robustness.TestChunkedBuildCompat.test_chunked_status_built) ... ok
+test_chunksize_none_same_as_no_param 
+(test_cache_robustness.TestChunkedBuildCompat.test_chunksize_none_same_as_no_param) ... ok
+test_address_norm_matches_direct_preprocess 
+(test_cache_robustness.TestParquetFidelity.test_address_norm_matches_direct_preprocess) ... ok
+test_entity_id_matches_direct (test_cache_robustness.TestParquetFidelity.test_entity_id_matches_direct) ... ok
+test_name_digits_matches_direct (test_cache_robustness.TestParquetFidelity.test_name_digits_matches_direct) ... ok
+test_name_norm_matches_direct_preprocess 
+(test_cache_robustness.TestParquetFidelity.test_name_norm_matches_direct_preprocess) ... ok
+test_name_token_count_matches_direct (test_cache_robustness.TestParquetFidelity.test_name_token_count_matches_direct) 
+... ok
+test_row_count_matches_direct_preprocess 
+(test_cache_robustness.TestParquetFidelity.test_row_count_matches_direct_preprocess) ... ok
+test_accented_letters_preserved (test_preprocess.TestAccentedText.test_accented_letters_preserved) ... ok
+test_cedilla_preserved (test_preprocess.TestAccentedText.test_cedilla_preserved) ... ok
+test_combining_diacritic_composed (test_preprocess.TestAccentedText.test_combining_diacritic_composed) ... ok
+test_precomposed_accented_lowercase (test_preprocess.TestAccentedText.test_precomposed_accented_lowercase) ... ok
+test_precomposed_accented_name (test_preprocess.TestAccentedText.test_precomposed_accented_name) ... ok
+test_abbrev_uppercase_expanded (test_preprocess.TestAddressAbbreviations.test_abbrev_uppercase_expanded) ... ok
+test_address_abbrev_not_applied_to_name 
+(test_preprocess.TestAddressAbbreviations.test_address_abbrev_not_applied_to_name) ... ok
+test_all_map_keys_are_post_normalization_forms 
+(test_preprocess.TestAddressAbbreviations.test_all_map_keys_are_post_normalization_forms) ... ok
+test_apt_expanded (test_preprocess.TestAddressAbbreviations.test_apt_expanded) ... ok
+test_ave_expanded (test_preprocess.TestAddressAbbreviations.test_ave_expanded) ... ok
+test_blvd_expanded (test_preprocess.TestAddressAbbreviations.test_blvd_expanded) ... ok
+test_ct_expanded (test_preprocess.TestAddressAbbreviations.test_ct_expanded) ... ok
+test_dr_expanded (test_preprocess.TestAddressAbbreviations.test_dr_expanded) ... ok
+test_dr_with_punctuation_expanded (test_preprocess.TestAddressAbbreviations.test_dr_with_punctuation_expanded) ... ok
+test_hwy_expanded (test_preprocess.TestAddressAbbreviations.test_hwy_expanded) ... ok
+test_ln_expanded (test_preprocess.TestAddressAbbreviations.test_ln_expanded) ... ok
+test_pkwy_expanded (test_preprocess.TestAddressAbbreviations.test_pkwy_expanded) ... ok
+test_pl_expanded (test_preprocess.TestAddressAbbreviations.test_pl_expanded) ... ok
+test_rd_expanded (test_preprocess.TestAddressAbbreviations.test_rd_expanded) ... ok
+test_st_not_in_map (test_preprocess.TestAddressAbbreviations.test_st_not_in_map) ... ok
+test_ste_expanded (test_preprocess.TestAddressAbbreviations.test_ste_expanded) ... ok
+test_normalize_address_deterministic (test_preprocess.TestDeterministicBehavior.test_normalize_address_deterministic) 
+... ok
+test_normalize_name_deterministic (test_preprocess.TestDeterministicBehavior.test_normalize_name_deterministic) ... ok
+test_normalize_text_deterministic (test_preprocess.TestDeterministicBehavior.test_normalize_text_deterministic) ... ok
+test_normalize_address_empty (test_preprocess.TestEmptyStringHandling.test_normalize_address_empty) ... ok
+test_normalize_address_whitespace_only 
+(test_preprocess.TestEmptyStringHandling.test_normalize_address_whitespace_only) ... ok
+test_normalize_name_empty (test_preprocess.TestEmptyStringHandling.test_normalize_name_empty) ... ok
+test_normalize_name_whitespace_only (test_preprocess.TestEmptyStringHandling.test_normalize_name_whitespace_only) ... 
+ok
+test_normalize_text_empty (test_preprocess.TestEmptyStringHandling.test_normalize_text_empty) ... ok
+test_normalize_text_whitespace_only (test_preprocess.TestEmptyStringHandling.test_normalize_text_whitespace_only) ... 
+ok
+test_all_map_keys_are_post_normalization_forms 
+(test_preprocess.TestLegalSuffixes.test_all_map_keys_are_post_normalization_forms) ... ok
+test_corp (test_preprocess.TestLegalSuffixes.test_corp) ... ok
+test_dead_key_removed (test_preprocess.TestLegalSuffixes.test_dead_key_removed) ... ok
+test_inc (test_preprocess.TestLegalSuffixes.test_inc) ... ok
+test_legal_suffix_not_applied_to_address (test_preprocess.TestLegalSuffixes.test_legal_suffix_not_applied_to_address) 
+... ok
+test_llp (test_preprocess.TestLegalSuffixes.test_llp) ... ok
+test_ltd (test_preprocess.TestLegalSuffixes.test_ltd) ... ok
+test_partial_match_not_replaced (test_preprocess.TestLegalSuffixes.test_partial_match_not_replaced) ... ok
+test_pvt (test_preprocess.TestLegalSuffixes.test_pvt) ... ok
+test_pvt_ltd_phrase (test_preprocess.TestLegalSuffixes.test_pvt_ltd_phrase) ... ok
+test_pvt_ltd_phrase_with_punctuation (test_preprocess.TestLegalSuffixes.test_pvt_ltd_phrase_with_punctuation) ... ok
+test_suffix_at_start (test_preprocess.TestLegalSuffixes.test_suffix_at_start) ... ok
+test_arabic_characters_preserved (test_preprocess.TestMultilingualText.test_arabic_characters_preserved) ... ok
+test_chinese_characters_preserved (test_preprocess.TestMultilingualText.test_chinese_characters_preserved) ... ok
+test_cyrillic_preserved (test_preprocess.TestMultilingualText.test_cyrillic_preserved) ... ok
+test_devanagari_preserved (test_preprocess.TestMultilingualText.test_devanagari_preserved) ... ok
+test_fullwidth_chinese_punctuation_removed 
+(test_preprocess.TestMultilingualText.test_fullwidth_chinese_punctuation_removed) ... ok
+test_japanese_preserved (test_preprocess.TestMultilingualText.test_japanese_preserved) ... ok
+test_korean_preserved (test_preprocess.TestMultilingualText.test_korean_preserved) ... ok
+test_mixed_latin_non_latin (test_preprocess.TestMultilingualText.test_mixed_latin_non_latin) ... ok
+test_punctuation_between_non_latin_removed 
+(test_preprocess.TestMultilingualText.test_punctuation_between_non_latin_removed) ... ok
+test_thai_preserved (test_preprocess.TestMultilingualText.test_thai_preserved) ... ok
+test_normalize_address_nan (test_preprocess.TestNaNHandling.test_normalize_address_nan) ... ok
+test_normalize_name_nan (test_preprocess.TestNaNHandling.test_normalize_name_nan) ... ok
+test_normalize_text_nan (test_preprocess.TestNaNHandling.test_normalize_text_nan) ... ok
+test_normalize_text_numpy_nan (test_preprocess.TestNaNHandling.test_normalize_text_numpy_nan) ... ok
+test_normalize_text_pd_na (test_preprocess.TestNaNHandling.test_normalize_text_pd_na) ... ok
+test_normalize_text_pd_nat (test_preprocess.TestNaNHandling.test_normalize_text_pd_nat) ... ok
+test_normalize_address_none (test_preprocess.TestNoneHandling.test_normalize_address_none) ... ok
+test_normalize_address_none_type (test_preprocess.TestNoneHandling.test_normalize_address_none_type) ... ok
+test_normalize_name_none (test_preprocess.TestNoneHandling.test_normalize_name_none) ... ok
+test_normalize_name_none_type (test_preprocess.TestNoneHandling.test_normalize_name_none_type) ... ok
+test_normalize_text_none (test_preprocess.TestNoneHandling.test_normalize_text_none) ... ok
+test_normalize_text_none_type (test_preprocess.TestNoneHandling.test_normalize_text_none_type) ... ok
+test_address_with_hyphen_number (test_preprocess.TestNumbersInAddresses.test_address_with_hyphen_number) ... ok
+test_mixed_alphanumeric_address (test_preprocess.TestNumbersInAddresses.test_mixed_alphanumeric_address) ... ok
+test_po_box_number_preserved (test_preprocess.TestNumbersInAddresses.test_po_box_number_preserved) ... ok
+test_street_number_preserved (test_preprocess.TestNumbersInAddresses.test_street_number_preserved) ... ok
+test_suite_number_preserved (test_preprocess.TestNumbersInAddresses.test_suite_number_preserved) ... ok
+test_zip_code_preserved (test_preprocess.TestNumbersInAddresses.test_zip_code_preserved) ... ok
+test_alphanumeric_token_preserved (test_preprocess.TestNumbersInNames.test_alphanumeric_token_preserved) ... ok
+test_digits_not_dropped_by_punctuation_removal 
+(test_preprocess.TestNumbersInNames.test_digits_not_dropped_by_punctuation_removal) ... ok
+test_leading_number_preserved (test_preprocess.TestNumbersInNames.test_leading_number_preserved) ... ok
+test_number_in_name_preserved (test_preprocess.TestNumbersInNames.test_number_in_name_preserved) ... ok
+test_trailing_number_preserved (test_preprocess.TestNumbersInNames.test_trailing_number_preserved) ... ok
+test_version_number_preserved (test_preprocess.TestNumbersInNames.test_version_number_preserved) ... ok
+test_year_preserved (test_preprocess.TestNumbersInNames.test_year_preserved) ... ok
+test_address_digits_correct (test_preprocess.TestPreprocessDataframe.test_address_digits_correct) ... ok
+test_address_digits_zero_for_null (test_preprocess.TestPreprocessDataframe.test_address_digits_zero_for_null) ... ok
+test_address_norm_ave_expanded (test_preprocess.TestPreprocessDataframe.test_address_norm_ave_expanded) ... ok
+test_address_norm_blvd_expanded (test_preprocess.TestPreprocessDataframe.test_address_norm_blvd_expanded) ... ok
+test_address_norm_case_normalization (test_preprocess.TestPreprocessDataframe.test_address_norm_case_normalization) 
+... ok
+test_address_norm_dr_expanded (test_preprocess.TestPreprocessDataframe.test_address_norm_dr_expanded) ... ok
+test_address_tokens_is_list (test_preprocess.TestPreprocessDataframe.test_address_tokens_is_list) ... ok
+test_all_required_columns_present (test_preprocess.TestPreprocessDataframe.test_all_required_columns_present) ... ok
+test_column_order_matches_schema (test_preprocess.TestPreprocessDataframe.test_column_order_matches_schema) ... ok
+test_deterministic_repeated_calls (test_preprocess.TestPreprocessDataframe.test_deterministic_repeated_calls) ... ok
+test_fullwidth_normalized_in_name (test_preprocess.TestPreprocessDataframe.test_fullwidth_normalized_in_name) ... ok
+test_input_not_mutated (test_preprocess.TestPreprocessDataframe.test_input_not_mutated) ... ok
+test_name_digits_correct (test_preprocess.TestPreprocessDataframe.test_name_digits_correct) ... ok
+test_name_digits_zero_for_no_digits (test_preprocess.TestPreprocessDataframe.test_name_digits_zero_for_no_digits) ... 
+ok
+test_name_length_correct (test_preprocess.TestPreprocessDataframe.test_name_length_correct) ... ok
+test_name_length_zero_for_empty (test_preprocess.TestPreprocessDataframe.test_name_length_zero_for_empty) ... ok
+test_name_norm_acme_inc (test_preprocess.TestPreprocessDataframe.test_name_norm_acme_inc) ... ok
+test_name_norm_case_normalization (test_preprocess.TestPreprocessDataframe.test_name_norm_case_normalization) ... ok
+test_name_norm_nan_input (test_preprocess.TestPreprocessDataframe.test_name_norm_nan_input) ... ok
+test_name_norm_null_input (test_preprocess.TestPreprocessDataframe.test_name_norm_null_input) ... ok
+test_name_norm_pvt_ltd (test_preprocess.TestPreprocessDataframe.test_name_norm_pvt_ltd) ... ok
+test_name_token_count_correct (test_preprocess.TestPreprocessDataframe.test_name_token_count_correct) ... ok
+test_name_token_count_zero_for_empty (test_preprocess.TestPreprocessDataframe.test_name_token_count_zero_for_empty) 
+... ok
+test_name_tokens_correct (test_preprocess.TestPreprocessDataframe.test_name_tokens_correct) ... ok
+test_name_tokens_empty_for_null_input (test_preprocess.TestPreprocessDataframe.test_name_tokens_empty_for_null_input) 
+... ok
+test_name_tokens_is_list (test_preprocess.TestPreprocessDataframe.test_name_tokens_is_list) ... ok
+test_no_exception_raised (test_preprocess.TestPreprocessDataframe.test_no_exception_raised) ... ok
+test_non_latin_preserved_in_name_norm (test_preprocess.TestPreprocessDataframe.test_non_latin_preserved_in_name_norm) 
+... ok
+test_output_has_exactly_14_columns (test_preprocess.TestPreprocessDataframe.test_output_has_exactly_14_columns) ... ok
+test_raw_business_address_preserved (test_preprocess.TestPreprocessDataframe.test_raw_business_address_preserved) ... 
+ok
+test_raw_business_name_preserved (test_preprocess.TestPreprocessDataframe.test_raw_business_name_preserved) ... ok
+test_raw_entity_id_preserved (test_preprocess.TestPreprocessDataframe.test_raw_entity_id_preserved) ... ok
+test_result_is_dataframe (test_preprocess.TestPreprocessDataframe.test_result_is_dataframe) ... ok
+test_row_count_preserved (test_preprocess.TestPreprocessDataframe.test_row_count_preserved) ... ok
+test_all_punctuation_empty (test_preprocess.TestPunctuationHeavyNames.test_all_punctuation_empty) ... ok
+test_ampersand_removed (test_preprocess.TestPunctuationHeavyNames.test_ampersand_removed) ... ok
+test_brackets_removed (test_preprocess.TestPunctuationHeavyNames.test_brackets_removed) ... ok
+test_commas_removed (test_preprocess.TestPunctuationHeavyNames.test_commas_removed) ... ok
+test_dots_removed (test_preprocess.TestPunctuationHeavyNames.test_dots_removed) ... ok
+test_exclamation_removed (test_preprocess.TestPunctuationHeavyNames.test_exclamation_removed) ... ok
+test_hyphens_removed (test_preprocess.TestPunctuationHeavyNames.test_hyphens_removed) ... ok
+test_leading_punctuation_stripped (test_preprocess.TestPunctuationHeavyNames.test_leading_punctuation_stripped) ... ok
+test_multiple_punctuation_collapsed (test_preprocess.TestPunctuationHeavyNames.test_multiple_punctuation_collapsed) 
+... ok
+test_parentheses_removed (test_preprocess.TestPunctuationHeavyNames.test_parentheses_removed) ... ok
+test_slash_removed (test_preprocess.TestPunctuationHeavyNames.test_slash_removed) ... ok
+test_double_space_collapsed (test_preprocess.TestRepeatedSpaces.test_double_space_collapsed) ... ok
+test_leading_trailing_stripped (test_preprocess.TestRepeatedSpaces.test_leading_trailing_stripped) ... ok
+test_mixed_whitespace_collapsed (test_preprocess.TestRepeatedSpaces.test_mixed_whitespace_collapsed) ... ok
+test_newline_collapsed (test_preprocess.TestRepeatedSpaces.test_newline_collapsed) ... ok
+test_tab_collapsed (test_preprocess.TestRepeatedSpaces.test_tab_collapsed) ... ok
+test_triple_space_collapsed (test_preprocess.TestRepeatedSpaces.test_triple_space_collapsed) ... ok
+test_fullwidth_digits_normalized (test_preprocess.TestUnicodeFullWidth.test_fullwidth_digits_normalized) ... ok
+test_fullwidth_latin_normalized (test_preprocess.TestUnicodeFullWidth.test_fullwidth_latin_normalized) ... ok
+test_fullwidth_space_normalized (test_preprocess.TestUnicodeFullWidth.test_fullwidth_space_normalized) ... ok
+test_ligature_fi_normalized (test_preprocess.TestUnicodeFullWidth.test_ligature_fi_normalized) ... ok
+test_superscript_normalized (test_preprocess.TestUnicodeFullWidth.test_superscript_normalized) ... ok
+test_build_cache_delegates_to_preprocess_dataframe 
+(test_train_test_consistency.TestCacheSplitNeutral.test_build_cache_delegates_to_preprocess_dataframe) ... ok
+test_cache_imports_preprocess_dataframe 
+(test_train_test_consistency.TestCacheSplitNeutral.test_cache_imports_preprocess_dataframe) ... ok
+test_cache_no_test_only_normalization 
+(test_train_test_consistency.TestCacheSplitNeutral.test_cache_no_test_only_normalization) ... ok
+test_cache_no_train_only_normalization 
+(test_train_test_consistency.TestCacheSplitNeutral.test_cache_no_train_only_normalization) ... ok
+test_cache_source_files_include_test 
+(test_train_test_consistency.TestCacheSplitNeutral.test_cache_source_files_include_test) ... ok
+test_cache_source_files_include_train 
+(test_train_test_consistency.TestCacheSplitNeutral.test_cache_source_files_include_train) ... ok
+test_cache_source_files_test_basenames 
+(test_train_test_consistency.TestCacheSplitNeutral.test_cache_source_files_test_basenames) ... ok
+test_cache_source_files_train_basenames 
+(test_train_test_consistency.TestCacheSplitNeutral.test_cache_source_files_train_basenames) ... ok
+test_cache_valid_splits_include_test 
+(test_train_test_consistency.TestCacheSplitNeutral.test_cache_valid_splits_include_test) ... ok
+test_cache_valid_splits_include_train 
+(test_train_test_consistency.TestCacheSplitNeutral.test_cache_valid_splits_include_train) ... ok
+test_validate_cache_checks_same_14_columns_for_both_splits 
+(test_train_test_consistency.TestCacheSplitNeutral.test_validate_cache_checks_same_14_columns_for_both_splits) ... ok
+test_address_abbrev_map_exported (test_train_test_consistency.TestCanonicalImport.test_address_abbrev_map_exported) 
+... ok
+test_legal_suffix_map_exported (test_train_test_consistency.TestCanonicalImport.test_legal_suffix_map_exported) ... ok
+test_normalize_address_defined_in_preprocess_only 
+(test_train_test_consistency.TestCanonicalImport.test_normalize_address_defined_in_preprocess_only) ... ok
+test_normalize_name_defined_in_preprocess_only 
+(test_train_test_consistency.TestCanonicalImport.test_normalize_name_defined_in_preprocess_only)
+normalize_name must originate from src/preprocess.py. ... ok
+test_output_columns_exported (test_train_test_consistency.TestCanonicalImport.test_output_columns_exported)
+_OUTPUT_COLUMNS must be importable from preprocess and have 14 items. ... ok
+test_preprocess_dataframe_defined_in_preprocess_only 
+(test_train_test_consistency.TestCanonicalImport.test_preprocess_dataframe_defined_in_preprocess_only) ... ok
+test_cache_py_has_no_hardcoded_country_list 
+(test_train_test_consistency.TestCountryHandling.test_cache_py_has_no_hardcoded_country_list) ... ok
+test_country_docstring_says_open_set 
+(test_train_test_consistency.TestCountryHandling.test_country_docstring_says_open_set)
+The preprocess.py docstring must state that country is open-set. ... ok
+test_country_not_normalized_by_name_pipeline 
+(test_train_test_consistency.TestCountryHandling.test_country_not_normalized_by_name_pipeline)
+country='US' must remain 'US' after preprocess_dataframe ΓÇö not lowercased. ... ok
+test_preprocess_passes_country_through 
+(test_train_test_consistency.TestCountryHandling.test_preprocess_passes_country_through) ... ok
+test_preprocess_py_has_no_hardcoded_country_list 
+(test_train_test_consistency.TestCountryHandling.test_preprocess_py_has_no_hardcoded_country_list)
+preprocess.py must not enumerate specific country codes/names. ... ok
+test_features_reads_cand_address_norm 
+(test_train_test_consistency.TestDownstreamFieldConsumption.test_features_reads_cand_address_norm) ... ok
+test_features_reads_cand_name_norm 
+(test_train_test_consistency.TestDownstreamFieldConsumption.test_features_reads_cand_name_norm) ... ok
+test_features_reads_country (test_train_test_consistency.TestDownstreamFieldConsumption.test_features_reads_country) 
+... ok
+test_features_reads_s1_address_norm 
+(test_train_test_consistency.TestDownstreamFieldConsumption.test_features_reads_s1_address_norm) ... ok
+test_features_reads_s1_name_norm 
+(test_train_test_consistency.TestDownstreamFieldConsumption.test_features_reads_s1_name_norm) ... ok
+test_predict_does_not_read_raw_business_name_for_matching 
+(test_train_test_consistency.TestDownstreamFieldConsumption.test_predict_does_not_read_raw_business_name_for_matching) 
+... ok
+test_predict_joins_on_address_norm 
+(test_train_test_consistency.TestDownstreamFieldConsumption.test_predict_joins_on_address_norm) ... ok
+test_predict_joins_on_name_norm 
+(test_train_test_consistency.TestDownstreamFieldConsumption.test_predict_joins_on_name_norm) ... ok
+test_train_does_not_read_raw_business_name_for_matching 
+(test_train_test_consistency.TestDownstreamFieldConsumption.test_train_does_not_read_raw_business_name_for_matching)
+train.py joins on name_norm not business_name for candidate scoring. ... ok
+test_train_joins_on_address_norm 
+(test_train_test_consistency.TestDownstreamFieldConsumption.test_train_joins_on_address_norm) ... ok
+test_train_joins_on_country (test_train_test_consistency.TestDownstreamFieldConsumption.test_train_joins_on_country) 
+... ok
+test_train_joins_on_name_norm 
+(test_train_test_consistency.TestDownstreamFieldConsumption.test_train_joins_on_name_norm) ... ok
+test_features_no_inline_regex_normalization 
+(test_train_test_consistency.TestFeaturesPipelineUsage.test_features_no_inline_regex_normalization) ... ok
+test_features_no_nfkc (test_train_test_consistency.TestFeaturesPipelineUsage.test_features_no_nfkc) ... ok
+test_features_no_normalize_address 
+(test_train_test_consistency.TestFeaturesPipelineUsage.test_features_no_normalize_address) ... ok
+test_features_no_normalize_name 
+(test_train_test_consistency.TestFeaturesPipelineUsage.test_features_no_normalize_name) ... ok
+test_features_no_preprocess_import 
+(test_train_test_consistency.TestFeaturesPipelineUsage.test_features_no_preprocess_import) ... ok
+test_features_no_unicodedata (test_train_test_consistency.TestFeaturesPipelineUsage.test_features_no_unicodedata) ... 
+ok
+test_features_reads_address_norm_column 
+(test_train_test_consistency.TestFeaturesPipelineUsage.test_features_reads_address_norm_column) ... ok
+test_features_reads_country_column 
+(test_train_test_consistency.TestFeaturesPipelineUsage.test_features_reads_country_column) ... ok
+test_features_reads_name_norm_column 
+(test_train_test_consistency.TestFeaturesPipelineUsage.test_features_reads_name_norm_column) ... ok
+test_no_test_specific_normalize_function 
+(test_train_test_consistency.TestNoRogueNormalization.test_no_test_specific_normalize_function)
+No function named normalize_* should exist in predict.py. ... ok
+test_no_train_specific_normalize_function 
+(test_train_test_consistency.TestNoRogueNormalization.test_no_train_specific_normalize_function)
+No function named normalize_* should exist in train.py. ... ok
+test_no_unicodedata_normalize_in_cache 
+(test_train_test_consistency.TestNoRogueNormalization.test_no_unicodedata_normalize_in_cache) ... ok
+test_no_unicodedata_normalize_in_candidates 
+(test_train_test_consistency.TestNoRogueNormalization.test_no_unicodedata_normalize_in_candidates) ... ok
+test_no_unicodedata_normalize_in_features 
+(test_train_test_consistency.TestNoRogueNormalization.test_no_unicodedata_normalize_in_features) ... ok
+test_no_unicodedata_normalize_in_predict 
+(test_train_test_consistency.TestNoRogueNormalization.test_no_unicodedata_normalize_in_predict) ... ok
+test_no_unicodedata_normalize_in_train 
+(test_train_test_consistency.TestNoRogueNormalization.test_no_unicodedata_normalize_in_train) ... ok
+test_predict_imports_from_preprocess_module 
+(test_train_test_consistency.TestPredictNormalizationUsage.test_predict_imports_from_preprocess_module) ... ok
+test_predict_imports_normalize_address 
+(test_train_test_consistency.TestPredictNormalizationUsage.test_predict_imports_normalize_address) ... ok
+test_predict_imports_normalize_name 
+(test_train_test_consistency.TestPredictNormalizationUsage.test_predict_imports_normalize_name) ... ok
+test_predict_imports_preprocess_dataframe 
+(test_train_test_consistency.TestPredictNormalizationUsage.test_predict_imports_preprocess_dataframe) ... ok
+test_predict_load_sources_accepts_split_parameter 
+(test_train_test_consistency.TestPredictNormalizationUsage.test_predict_load_sources_accepts_split_parameter) ... ok
+test_predict_load_sources_parametric_split 
+(test_train_test_consistency.TestPredictNormalizationUsage.test_predict_load_sources_parametric_split)
+predict.load_sources must use the split parameter to form filenames, ... ok
+test_predict_load_sources_uses_preprocess_dataframe 
+(test_train_test_consistency.TestPredictNormalizationUsage.test_predict_load_sources_uses_preprocess_dataframe) ... ok
+test_predict_no_nfkc (test_train_test_consistency.TestPredictNormalizationUsage.test_predict_no_nfkc) ... ok
+test_predict_no_unicodedata (test_train_test_consistency.TestPredictNormalizationUsage.test_predict_no_unicodedata) 
+... ok
+test_predict_uses_m2_norm_columns 
+(test_train_test_consistency.TestPredictNormalizationUsage.test_predict_uses_m2_norm_columns) ... ok
+test_all_raw_cols_in_output (test_train_test_consistency.TestRawFieldPreservation.test_all_raw_cols_in_output) ... ok
+test_business_address_not_overwritten 
+(test_train_test_consistency.TestRawFieldPreservation.test_business_address_not_overwritten) ... ok
+test_business_name_not_overwritten 
+(test_train_test_consistency.TestRawFieldPreservation.test_business_name_not_overwritten) ... ok
+test_country_not_overwritten (test_train_test_consistency.TestRawFieldPreservation.test_country_not_overwritten) ... ok
+test_entity_id_preserved (test_train_test_consistency.TestRawFieldPreservation.test_entity_id_preserved) ... ok
+test_name_norm_differs_from_business_name 
+(test_train_test_consistency.TestRawFieldPreservation.test_name_norm_differs_from_business_name)
+Proof that a separate derived column exists, not an in-place override. ... ok
+test_address_norm_definition_same_for_train_and_test 
+(test_train_test_consistency.TestRequiredNormalizedFields.test_address_norm_definition_same_for_train_and_test) ... ok
+test_all_14_fields_in_output (test_train_test_consistency.TestRequiredNormalizedFields.test_all_14_fields_in_output) 
+... ok
+test_all_required_norm_fields_in_output 
+(test_train_test_consistency.TestRequiredNormalizedFields.test_all_required_norm_fields_in_output) ... ok
+test_name_norm_definition_same_for_train_and_test 
+(test_train_test_consistency.TestRequiredNormalizedFields.test_name_norm_definition_same_for_train_and_test)
+The same input must produce the same name_norm regardless of split label. ... ok
+test_test_df_has_all_14_columns 
+(test_train_test_consistency.TestRequiredNormalizedFields.test_test_df_has_all_14_columns) ... ok
+test_train_and_test_output_same_columns 
+(test_train_test_consistency.TestRequiredNormalizedFields.test_train_and_test_output_same_columns) ... ok
+test_train_df_has_all_14_columns 
+(test_train_test_consistency.TestRequiredNormalizedFields.test_train_df_has_all_14_columns) ... ok
+test_cache_required_columns_derived_from_output_columns 
+(test_train_test_consistency.TestSchemaConsistency.test_cache_required_columns_derived_from_output_columns) ... ok
+test_no_extra_columns_in_preprocess_output 
+(test_train_test_consistency.TestSchemaConsistency.test_no_extra_columns_in_preprocess_output)
+preprocess_dataframe() must return exactly 14 columns, no extras. ... ok
+test_output_columns_matches_expected_schema 
+(test_train_test_consistency.TestSchemaConsistency.test_output_columns_matches_expected_schema) ... ok
+test_schema_has_4_raw_fields (test_train_test_consistency.TestSchemaConsistency.test_schema_has_4_raw_fields) ... ok
+test_schema_has_count_fields (test_train_test_consistency.TestSchemaConsistency.test_schema_has_count_fields) ... ok
+test_schema_has_digit_fields (test_train_test_consistency.TestSchemaConsistency.test_schema_has_digit_fields) ... ok
+test_schema_has_exactly_14_columns 
+(test_train_test_consistency.TestSchemaConsistency.test_schema_has_exactly_14_columns) ... ok
+test_schema_has_length_fields (test_train_test_consistency.TestSchemaConsistency.test_schema_has_length_fields) ... ok
+test_schema_has_norm_fields (test_train_test_consistency.TestSchemaConsistency.test_schema_has_norm_fields) ... ok
+test_schema_has_token_fields (test_train_test_consistency.TestSchemaConsistency.test_schema_has_token_fields) ... ok
+test_train_imports_from_preprocess_module 
+(test_train_test_consistency.TestTrainNormalizationUsage.test_train_imports_from_preprocess_module) ... ok
+test_train_imports_normalize_address 
+(test_train_test_consistency.TestTrainNormalizationUsage.test_train_imports_normalize_address) ... ok
+test_train_imports_normalize_name 
+(test_train_test_consistency.TestTrainNormalizationUsage.test_train_imports_normalize_name) ... ok
+test_train_imports_preprocess_dataframe 
+(test_train_test_consistency.TestTrainNormalizationUsage.test_train_imports_preprocess_dataframe) ... ok
+test_train_load_sources_uses_preprocess_dataframe 
+(test_train_test_consistency.TestTrainNormalizationUsage.test_train_load_sources_uses_preprocess_dataframe) ... ok
+test_train_no_nfkc (test_train_test_consistency.TestTrainNormalizationUsage.test_train_no_nfkc) ... ok
+test_train_no_unicodedata (test_train_test_consistency.TestTrainNormalizationUsage.test_train_no_unicodedata) ... ok
+test_train_uses_m2_norm_columns 
+(test_train_test_consistency.TestTrainNormalizationUsage.test_train_uses_m2_norm_columns) ... ok
+test_address_norm_identical_for_train_and_test_rows 
+(test_train_test_consistency.TestTrainTestOutputParity.test_address_norm_identical_for_train_and_test_rows) ... ok
+test_all_14_columns_identical_for_train_and_test 
+(test_train_test_consistency.TestTrainTestOutputParity.test_all_14_columns_identical_for_train_and_test) ... ok
+test_name_norm_identical_for_train_and_test_rows 
+(test_train_test_consistency.TestTrainTestOutputParity.test_name_norm_identical_for_train_and_test_rows) ... ok
+test_normalize_address_same_function_in_predict 
+(test_train_test_consistency.TestTrainTestOutputParity.test_normalize_address_same_function_in_predict) ... ok
+test_normalize_address_same_function_in_train_and_test 
+(test_train_test_consistency.TestTrainTestOutputParity.test_normalize_address_same_function_in_train_and_test) ... ok
+test_normalize_name_same_function_in_predict 
+(test_train_test_consistency.TestTrainTestOutputParity.test_normalize_name_same_function_in_predict) ... ok
+test_normalize_name_same_function_in_train_and_test 
+(test_train_test_consistency.TestTrainTestOutputParity.test_normalize_name_same_function_in_train_and_test)
+Verify the function object imported by train.py is the M2 canonical one. ... ok
+
+----------------------------------------------------------------------
+Ran 298 tests in 4.006s
+
+OK
+  LOAD  train_source1.parquet  (100 rows, 0.047s)
+  LOAD  train_source1.parquet  (100 rows, 0.005s)
+  LOAD  train_source2.parquet  (100 rows, 0.015s)
+  LOAD  train_source3.parquet  (100 rows, 0.017s)
+  LOAD  train_source1.parquet  (100 rows, 0.005s)
+  LOAD  train_source2.parquet  (100 rows, 0.005s)
+  LOAD  train_source3.parquet  (100 rows, 0.005s)
+  LOAD  train_source1.parquet  (100 rows, 0.003s)
+  LOAD  train_source1.parquet  (100 rows, 0.004s)
+  LOAD  train_source1.parquet  (100 rows, 0.004s)
+  LOAD  train_source1.parquet  (100 rows, 0.004s)
+  LOAD  train_source1.parquet  (100 rows, 0.004s)
+  LOAD  train_source1.parquet  (100 rows, 0.004s)
+  LOAD  train_source1.parquet  (100 rows, 0.004s)
+  LOAD  train_source1.parquet  (100 rows, 0.004s)
+  LOAD  train_source1.parquet  (100 rows, 0.004s)
+  LOAD  train_source1.parquet  (100 rows, 0.004s)
+  LOAD  test_source3.parquet  (60 rows, 0.016s)
+  LOAD  train_source1.parquet  (300 rows, 0.017s)
+  LOAD  train_source1.parquet  (300 rows, 0.024s)
+  LOAD  train_source1.parquet  (300 rows, 0.004s)
+  LOAD  train_source1.parquet  (300 rows, 0.004s)
+  LOAD  train_source1.parquet  (300 rows, 0.004s)
+  LOAD  train_source1.parquet  (300 rows, 0.005s)
+  LOAD  train_source1.parquet  (300 rows, 0.005s)
+  LOAD  train_source1.parquet  (300 rows, 0.004s)
+  LOAD  train_source1.parquet  (300 rows, 0.005s)
+  LOAD  train_source1.parquet  (300 rows, 0.006s)
+  LOAD  train_source1.parquet  (200 rows, 0.016s)
+  LOAD  train_source1.parquet  (200 rows, 0.004s)
+  LOAD  train_source1.parquet  (200 rows, 0.004s)
+  LOAD  train_source1.parquet  (200 rows, 0.004s)
+  LOAD  train_source1.parquet  (200 rows, 0.004s)
+  LOAD  train_source1.parquet  (200 rows, 0.004s)
