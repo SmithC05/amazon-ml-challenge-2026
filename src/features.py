@@ -246,3 +246,61 @@ def build_feature_matrix(pairs_df: pd.DataFrame) -> pd.DataFrame:
     """
     records = [extract_features(row) for _, row in pairs_df.iterrows()]
     return pd.DataFrame(records, columns=FEATURE_NAMES, index=pairs_df.index)
+
+
+def build_feature_matrix_from_dicts(pair_dicts: list[dict]) -> "np.ndarray":
+    """
+    Memory-safe alternative to build_feature_matrix() for use in the
+    streaming prediction pipeline.
+
+    Accepts a *list of plain dicts* (already joined pair rows) rather than
+    a full DataFrame, avoiding the overhead of constructing an intermediate
+    DataFrame just to iterate over it.
+
+    Parameters
+    ----------
+    pair_dicts : list of dict
+        Each dict must contain the same keys expected by extract_features():
+        s1_name_norm, s1_address_norm, s1_country,
+        cand_name_norm, cand_address_norm, cand_country, cand_entity_id.
+
+    Returns
+    -------
+    numpy.ndarray of shape (len(pair_dicts), 16) with float64 dtype.
+    The column order matches FEATURE_NAMES exactly.
+    """
+    import numpy as np
+
+    n = len(pair_dicts)
+    out = np.empty((n, 16), dtype=np.float64)
+
+    for i, d in enumerate(pair_dicts):
+        s1_name = str(d.get("s1_name_norm", "") or "")
+        s1_addr = str(d.get("s1_address_norm", "") or "")
+        s1_ctry = str(d.get("s1_country", "") or "").strip().lower()
+        cn_name = str(d.get("cand_name_norm", "") or "")
+        cn_addr = str(d.get("cand_address_norm", "") or "")
+        cn_ctry = str(d.get("cand_country", "") or "").strip().lower()
+        cand_id = str(d.get("cand_entity_id", "") or "")
+
+        n_exact, n_jac, n_tok, n_lev, n_ldiff, n_tcdiff = _text_features(s1_name, cn_name)
+        a_exact, a_jac, a_tok, a_lev, a_ldiff, a_tcdiff = _text_features(s1_addr, cn_addr)
+
+        out[i, 0]  = n_exact
+        out[i, 1]  = n_jac
+        out[i, 2]  = n_tok
+        out[i, 3]  = n_lev
+        out[i, 4]  = n_ldiff
+        out[i, 5]  = n_tcdiff
+        out[i, 6]  = a_exact
+        out[i, 7]  = a_jac
+        out[i, 8]  = a_tok
+        out[i, 9]  = a_lev
+        out[i, 10] = a_ldiff
+        out[i, 11] = a_tcdiff
+        out[i, 12] = float(s1_addr == "" or cn_addr == "")  # address_missing
+        out[i, 13] = float(s1_ctry == cn_ctry and s1_ctry != "")  # country_match
+        out[i, 14] = float(cand_id.startswith("S2-"))  # source_is_s2
+        out[i, 15] = float(cand_id.startswith("S3-"))  # source_is_s3
+
+    return out

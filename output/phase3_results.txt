@@ -1,0 +1,209 @@
+﻿
+======================================================================
+PHASE 3 -- NORMALIZATION EFFECTIVENESS ANALYSIS
+======================================================================
+
+STEP 1: Loading data
+  Loading Source 1 from train_source1.tsv ...
+    -> 2,206,821 rows  columns: ['entity_id', 'business_name', 'business_address', 'country']
+  Loading Source 2 from train_source2.tsv ...
+    -> 5,034,616 rows  columns: ['entity_id', 'business_name', 'business_address', 'country']
+  Loading Source 3 from train_source3.tsv ...
+    -> 5,285,603 rows  columns: ['entity_id', 'business_name', 'business_address', 'country']
+  Loading Ground Truth from train_ground_truth.tsv ...
+    -> 2,206,821 rows  columns: ['source1_entity_id', 'matched_entity_ids']
+
+STEP 2: Parsing ground truth ...
+  Total ground-truth rows              : 2,206,821
+  S1 rows WITH known matches           : 2,083,574
+  S1 rows with missing/empty GT        : 123,247
+  Total true labeled pairs             : 7,638,365
+    S1->S2 pairs                       : 3,693,619
+    S1->S3 pairs                       : 3,944,746
+
+STEP 3: Joining pairs with source records ...
+  Resolved pairs for analysis          : 7,638,365
+
+STEP 4: Applying normalization ...
+  Done.
+
+STEP 5: Computing name effectiveness ...
+  Raw exact name matches               : 354,118 / 7,638,365  (4.6360%)
+  Normalized exact name matches        : 1,872,588 / 7,638,365  (24.5156%)
+  Improvement                          : +19.8795 pp
+  Newly exact pairs                    : 1,518,470
+
+STEP 6: Computing address effectiveness ...
+  Raw exact address matches            : 170,074 / 7,638,365  (2.2266%)
+  Normalized exact address matches     : 835,576 / 7,638,365  (10.9392%)
+  Improvement                          : +8.7126 pp
+  Newly exact pairs                    : 665,502
+
+======================================================================
+NAME NEWLY-EXACT EXAMPLES (raw name != target, normalized name == target)
+======================================================================
+    source1_entity_id                  : 'S1-29845983'
+    matched_entity_id                  : 'S2-648035184'
+    matched_source                     : 'S2'
+    s1_business_name                   : 'Hendricks and Flowers Inc'
+    target_business_name               : 'Hendricks and  Flowers Inc'
+    s1_business_name_norm              : 'hendricks and flowers incorporated'
+    target_business_name_norm          : 'hendricks and flowers incorporated'
+
+    source1_entity_id                  : 'S1-274126313'
+    matched_entity_id                  : 'S2-736616474'
+    matched_source                     : 'S2'
+    s1_business_name                   : 'Obsidian, LLC'
+    target_business_name               : 'Obsidian,-LLC'
+    s1_business_name_norm              : 'obsidian llc'
+    target_business_name_norm          : 'obsidian llc'
+
+    source1_entity_id                  : 'S1-274126313'
+    matched_entity_id                  : 'S2-680265918'
+    matched_source                     : 'S2'
+    s1_business_name                   : 'Obsidian, LLC'
+    target_business_name               : 'obsidian, llc'
+    s1_business_name_norm              : 'obsidian llc'
+    target_business_name_norm          : 'obsidian llc'
+
+    source1_entity_id                  : 'S1-274126313'
+    matched_entity_id                  : 'S3-925631694'
+    matched_source                     : 'S3'
+    s1_business_name                   : 'Obsidian, LLC'
+    target_business_name               : 'Obsidian, Llc'
+    s1_business_name_norm              : 'obsidian llc'
+    target_business_name_norm          : 'obsidian llc'
+
+    source1_entity_id                  : 'S1-274126313'
+    matched_entity_id                  : 'S3-461175723'
+    matched_source                     : 'S3'
+    s1_business_name                   : 'Obsidian, LLC'
+    target_business_name               : 'Obsidian, [[LLC]]'
+    s1_business_name_norm              : 'obsidian llc'
+    target_business_name_norm          : 'obsidian llc'
+
+    source1_entity_id                  : 'S1-65263544'
+    matched_entity_id                  : 'S2-881122703'
+    matched_source                     : 'S2'
+    s1_business_name                   : 'Caldeon Nova'
+    target_business_name               : 'Caldeon  Nova'
+    s1_business_name_norm              : 'caldeon nova'
+    target_business_name_norm          : 'caldeon nova'
+
+    source1_entity_id                  : 'S1-65263544'
+    matched_entity_id                  : 'S2-180463458'
+    matched_source                     : 'S2'
+    s1_business_name                   : 'Caldeon Nova'
+    target_business_name               : 'CALDEON NOVA'
+    s1_business_name_norm              : 'caldeon nova'
+    target_business_name_norm          : 'caldeon nova'
+
+    source1_entity_id                  : 'S1-65263544'
+    matched_entity_id                  : 'S3-102573485'
+    matched_source                     : 'S3'
+    s1_business_name                   : 'Caldeon Nova'
+    target_business_name               : '>> caldeon nova'
+    s1_business_name_norm              : 'caldeon nova'
+    target_business_name_norm          : 'caldeon nova'
+
+======================================================================
+ADDRESS NEWLY-EXACT EXAMPLES (raw addr != target, normalized addr == target)
+======================================================================
+    source1_entity_id                  : 'S1-55344266'
+    matched_entity_id                  : 'S2-249013014'
+    matched_source                     : 'S2'
+    s1_business_address                : '6(29), C.I.T. Colony, 2Nd Main Road Mylapore, Chennai, Tamil Nadu'
+    target_business_address            : '6(29), C.I.T. COLONY, 2ND MAIN ROAD MYLAPORE, CHENNAI, Tamil Nadu'
+    s1_business_address_norm           : '6 29 c i t colony 2nd main road mylapore chennai tamil nadu'
+    target_business_address_norm       : '6 29 c i t colony 2nd main road mylapore chennai tamil nadu'
+
+    source1_entity_id                  : 'S1-55344266'
+    matched_entity_id                  : 'S2-197070651'
+    matched_source                     : 'S2'
+    s1_business_address                : '6(29), C.I.T. Colony, 2Nd Main Road Mylapore, Chennai, Tamil Nadu'
+    target_business_address            : '6(29), C.I.T. COLONY, 2ND MAIN ROAD MYLAPORE, CHENNAI, Tamil Nadu'
+    s1_business_address_norm           : '6 29 c i t colony 2nd main road mylapore chennai tamil nadu'
+    target_business_address_norm       : '6 29 c i t colony 2nd main road mylapore chennai tamil nadu'
+
+    source1_entity_id                  : 'S1-546142636'
+    matched_entity_id                  : 'S2-487600131'
+    matched_source                     : 'S2'
+    s1_business_address                : '8706 Kentucky Derby Drive, Waxhaw, NC'
+    target_business_address            : '8706 KENTUCKY DERBY DR, WAXHAW, NC'
+    s1_business_address_norm           : '8706 kentucky derby drive waxhaw nc'
+    target_business_address_norm       : '8706 kentucky derby drive waxhaw nc'
+
+    source1_entity_id                  : 'S1-546142636'
+    matched_entity_id                  : 'S2-582477216'
+    matched_source                     : 'S2'
+    s1_business_address                : '8706 Kentucky Derby Drive, Waxhaw, NC'
+    target_business_address            : '8706 KENTUCKY DERBY DR, WAXHAW, NC'
+    s1_business_address_norm           : '8706 kentucky derby drive waxhaw nc'
+    target_business_address_norm       : '8706 kentucky derby drive waxhaw nc'
+
+    source1_entity_id                  : 'S1-546142636'
+    matched_entity_id                  : 'S2-392804085'
+    matched_source                     : 'S2'
+    s1_business_address                : '8706 Kentucky Derby Drive, Waxhaw, NC'
+    target_business_address            : '8706 KENTUCKY DERBY DRIVE, WAXHAW, NC'
+    s1_business_address_norm           : '8706 kentucky derby drive waxhaw nc'
+    target_business_address_norm       : '8706 kentucky derby drive waxhaw nc'
+
+    source1_entity_id                  : 'S1-503957000'
+    matched_entity_id                  : 'S2-994658326'
+    matched_source                     : 'S2'
+    s1_business_address                : '20085 Us 23, Circleville, OH'
+    target_business_address            : '20085 US 23, CIRCLEVILLE, OH'
+    s1_business_address_norm           : '20085 us 23 circleville oh'
+    target_business_address_norm       : '20085 us 23 circleville oh'
+
+    source1_entity_id                  : 'S1-503957000'
+    matched_entity_id                  : 'S2-235117490'
+    matched_source                     : 'S2'
+    s1_business_address                : '20085 Us 23, Circleville, OH'
+    target_business_address            : '20085 US 23, CIRCLEVILLE, OH'
+    s1_business_address_norm           : '20085 us 23 circleville oh'
+    target_business_address_norm       : '20085 us 23 circleville oh'
+
+    source1_entity_id                  : 'S1-503957000'
+    matched_entity_id                  : 'S2-353308450'
+    matched_source                     : 'S2'
+    s1_business_address                : '20085 Us 23, Circleville, OH'
+    target_business_address            : '20085 US 23, CIRCLEVILLE, OH'
+    s1_business_address_norm           : '20085 us 23 circleville oh'
+    target_business_address_norm       : '20085 us 23 circleville oh'
+
+======================================================================
+PHASE 3 NORMALIZATION EFFECTIVENESS REPORT
+======================================================================
+
+True labeled pairs: 7,638,365
+
+Name:
+  Raw exact matches        = 354,118
+  Raw exact match rate     = 4.6360%
+  Normalized exact matches = 1,872,588
+  Normalized exact rate    = 24.5156%
+  Improvement              = +19.8795 percentage points
+  Newly exact pairs        = 1,518,470
+
+Address:
+  Raw exact matches        = 170,074
+  Raw exact match rate     = 2.2266%
+  Normalized exact matches = 835,576
+  Normalized exact rate    = 10.9392%
+  Improvement              = +8.7126 percentage points
+  Newly exact pairs        = 665,502
+
+Summary table:
+  Metric                                        Count    Percentage
+  ----------------------------------------  ----------  ------------
+  Raw exact name                              354,118       4.6360%
+  Normalized exact name                     1,872,588      24.5156%
+  Name newly exact                          1,518,470      19.8795%
+  Raw exact address                           170,074       2.2266%
+  Normalized exact address                    835,576      10.9392%
+  Address newly exact                         665,502       8.7126%
+
+PHASE 3 STATUS: COMPLETE
+

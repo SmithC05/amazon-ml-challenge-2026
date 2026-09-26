@@ -59,3 +59,8 @@ Thumbs.db
 *.env
 .env.*
 secrets.json
+
+# DuckDB files
+*.duckdb
+*.duckdb.wal
+
