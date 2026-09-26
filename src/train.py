@@ -239,16 +239,40 @@ def entity_split(
     pair_df: pd.DataFrame,
     train_frac: float = 0.80,
     random_state: int = RANDOM_STATE,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+    all_s1_ids: list[str] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, list[str], list[str]]:
     """
     Split *pair_df* by unique S1 entity (never row-level).
 
-    Returns (train_pairs, val_pairs).  The intersection of train and val
-    S1 IDs is guaranteed to be empty.
+    Parameters
+    ----------
+    pair_df      : DataFrame of labeled candidate pairs.
+    train_frac   : Fraction of S1 entities assigned to training.
+    random_state : RNG seed for reproducibility.
+    all_s1_ids   : The COMPLETE S1 entity population to split.
+                   When supplied, the 80/20 split is computed over this
+                   population — including entities that have zero candidate
+                   rows in *pair_df*.  This ensures zero-candidate entities
+                   are assigned to either train or val and are represented in
+                   the entity-level validation metric.
+                   When None (legacy behaviour), the population is derived
+                   from pair_df["source1_entity_id"].unique() — which silently
+                   excludes any S1 entity with no usable candidate rows.
+
+    Returns
+    -------
+    (train_pairs, val_pairs, train_ids_list, val_ids_list)
+        train_pairs / val_pairs — candidate-pair DataFrames.
+        train_ids_list          — all train S1 IDs (including zero-candidate).
+        val_ids_list            — all val   S1 IDs (including zero-candidate).
     """
-    s1_ids = pair_df["source1_entity_id"].unique()
+    if all_s1_ids is not None:
+        population = np.array(all_s1_ids, dtype=object)
+    else:
+        population = pair_df["source1_entity_id"].unique()
+
     rng = np.random.default_rng(random_state)
-    shuffled = rng.permutation(s1_ids)
+    shuffled = rng.permutation(population)
     n_train = int(len(shuffled) * train_frac)
     train_ids = set(shuffled[:n_train])
     val_ids   = set(shuffled[n_train:])
@@ -257,7 +281,7 @@ def entity_split(
 
     train_df = pair_df[pair_df["source1_entity_id"].isin(train_ids)].copy()
     val_df   = pair_df[pair_df["source1_entity_id"].isin(val_ids)].copy()
-    return train_df, val_df
+    return train_df, val_df, sorted(train_ids), sorted(val_ids)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -269,28 +293,43 @@ def threshold_sweep(
     proba: np.ndarray,
     truth_map: dict[str, set[str]],
     thresholds: list[float] | None = None,
+    val_s1_ids: list[str] | None = None,
 ) -> pd.DataFrame:
     """
     Evaluate a range of decision thresholds on the validation set.
+
+    Parameters
+    ----------
+    val_df     : Candidate-pair rows assigned to validation.
+    proba      : Predicted positive probabilities (aligned with val_df rows).
+    truth_map  : {s1_id → set of true matched IDs}.
+    thresholds : Thresholds to evaluate.  Defaults to 0.50 … 0.95 step 0.05.
+    val_s1_ids : COMPLETE list of validation S1 entity IDs, including those
+                 with zero candidate pairs.  When supplied the entity-level
+                 macro F0.5 is averaged over this full population.
+                 When None, derived from val_df (legacy — excludes zero-
+                 candidate entities).
 
     Returns a DataFrame with columns: threshold, precision, recall, f0_5.
     """
     if thresholds is None:
         thresholds = [round(t, 2) for t in np.arange(0.50, 0.96, 0.05)]
 
-    val_s1_ids = val_df["source1_entity_id"].unique().tolist()
+    # Use the caller-supplied complete population when available.
+    if val_s1_ids is None:
+        val_s1_ids = val_df["source1_entity_id"].unique().tolist()
+
     results = []
 
     for t in thresholds:
         pred_positive = proba >= t
-        pred_map: dict[str, set[str]] = {}
-        for sid in val_s1_ids:
-            pred_map[sid] = set()
+        # Initialise every val entity to empty prediction set.
+        pred_map: dict[str, set[str]] = {sid: set() for sid in val_s1_ids}
 
         mask_df = val_df.copy()
         mask_df["_pos"] = pred_positive
         for sid, grp in mask_df.groupby("source1_entity_id"):
-            pred_map[sid] = set(grp.loc[grp["_pos"], "cand_entity_id"])
+            pred_map[str(sid)] = set(grp.loc[grp["_pos"], "cand_entity_id"])
 
         # Per-entity precision / recall (for the aggregate report)
         all_prec, all_rec, all_f05 = [], [], []
@@ -342,12 +381,24 @@ def train(
           f"(positive={pair_df['label'].sum():,}, "
           f"negative={(pair_df['label'] == 0).sum():,})")
 
-    # 4. Entity-level split
-    train_df, val_df = entity_split(pair_df)
-    train_s1 = set(train_df["source1_entity_id"].unique())
-    val_s1   = set(val_df["source1_entity_id"].unique())
+    # 4. Entity-level split — based on the COMPLETE S1 population so that
+    #    zero-candidate S1 entities are still assigned to train/val and
+    #    included in the entity-level validation metric.
+    all_s1_ids_list = s1["entity_id"].tolist()
+    train_df, val_df, train_s1_list, val_s1_list = entity_split(
+        pair_df,
+        all_s1_ids=all_s1_ids_list,
+    )
+    train_s1 = set(train_s1_list)
+    val_s1   = set(val_s1_list)
+
+    # Count zero-candidate val entities (in val population but not in pair_df)
+    val_s1_with_pairs = set(val_df["source1_entity_id"].unique())
+    n_zero_cand_val   = len(val_s1 - val_s1_with_pairs)
+
     print(f"Train S1={len(train_s1):,}  pairs={len(train_df):,}")
     print(f"Val   S1={len(val_s1):,}   pairs={len(val_df):,}")
+    print(f"Val   S1 with zero candidate rows : {n_zero_cand_val:,}")
     assert train_s1 & val_s1 == set(), "Entity split leak!"
 
     # 5. Feature extraction
@@ -365,9 +416,13 @@ def train(
     model.fit(X_train_sc, y_train)
     print("Model trained.")
 
-    # 7. Threshold sweep on validation set
+    # 7. Threshold sweep — pass the complete val population so zero-candidate
+    #    entities are included in the macro-F0.5 average.
     val_proba = model.predict_proba(X_val_sc)[:, 1]
-    sweep_df = threshold_sweep(val_df, val_proba, truth_map)
+    sweep_df = threshold_sweep(
+        val_df, val_proba, truth_map,
+        val_s1_ids=val_s1_list,
+    )
     best_row = sweep_df.loc[sweep_df["f0_5"].idxmax()]
     best_threshold = float(best_row["threshold"])
     best_f05       = float(best_row["f0_5"])
@@ -395,13 +450,14 @@ def train(
         "random_seed":           RANDOM_STATE,
         "train_s1_count":        len(train_s1),
         "validation_s1_count":   len(val_s1),
+        "val_s1_zero_cand":      n_zero_cand_val,
         "train_pair_count":      int(len(train_df)),
         "validation_pair_count": int(len(val_df)),
         "precision":             round(best_prec, 6),
         "recall":                round(best_rec, 6),
         "f0_5":                  round(best_f05, 6),
         "baseline_version":      "1.0",
-        "metric":                "entity-level macro F0.5 (competition official)",
+        "metric":                "entity-level macro F0.5 (competition official, zero-cand entities included)",
         "candidates_source":     str(candidates_path),
     }
     config_path = models_dir / "model_config.json"
