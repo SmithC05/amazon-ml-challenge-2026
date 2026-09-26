@@ -20,10 +20,10 @@ def run_baseline():
     con.execute("PRAGMA threads=2")
     con.execute("PRAGMA temp_directory='emergency_tmp'")
 
-    s1_path = "cache/test_source1.parquet"
-    s2_path = "cache/test_source2.parquet"
-    s3_path = "cache/test_source3.parquet"
-    out_path = "output/matching_results.tsv"
+    s1_path = "dataset/processed/m2_cache/test_source1.parquet"
+    s2_path = "dataset/processed/m2_cache/test_source2.parquet"
+    s3_path = "dataset/processed/m2_cache/test_source3.parquet"
+    out_path = "output/trial_submission/matching_results.tsv"
 
     print("Creating views...")
     con.execute(f"""
