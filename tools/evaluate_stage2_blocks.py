@@ -64,45 +64,50 @@ def _load_gt(gt_path: Path, s1_ids: set[str]) -> dict[str, set[str]]:
 
 
 def _evaluate_tsv(tsv_path: Path, truth: dict[str, set[str]], s1_ids: list[str]) -> dict:
-    cands: dict[str, set[str]] = {}
+    tsv_path_str = str(tsv_path).replace("\\", "/")
+    con = duckdb.connect()
+    stats = con.execute(f"""
+        SELECT 
+            COALESCE(SUM(
+                CASE WHEN candidate_entity_ids IS NULL OR candidate_entity_ids = '' THEN 0
+                ELSE len(string_split(candidate_entity_ids, ',')) END
+            ), 0) AS cand_pairs,
+            COALESCE(MAX(
+                CASE WHEN candidate_entity_ids IS NULL OR candidate_entity_ids = '' THEN 0
+                ELSE len(string_split(candidate_entity_ids, ',')) END
+            ), 0) AS max_cand,
+            COUNT(*) FILTER (WHERE candidate_entity_ids IS NOT NULL AND candidate_entity_ids != '') AS s1_with_cands
+        FROM read_csv_auto('{tsv_path_str}', delim='\\t', header=True)
+    """).fetchone()
+    con.close()
+
+    total_cand_pairs = int(stats[0])
+    max_cand = int(stats[1])
+    s1_with_cands = int(stats[2])
+
+    found = 0
+    s1_fully_recovered = 0
+    total_gt = sum(len(truth.get(sid, set())) for sid in s1_ids)
+
     with open(tsv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f, delimiter="\t")
         fieldnames = reader.fieldnames or []
         id_col = next((c for c in fieldnames if "source1" in c.lower()), None)
         cand_col = next((c for c in fieldnames if "candidate" in c.lower()), None)
+        
         for row in reader:
             sid = row[id_col].strip()
-            if sid not in truth:
-                continue
-            raw = row[cand_col].strip() if row[cand_col] else ""
-            if raw:
-                cands[sid] = {x.strip() for x in raw.split(",") if x.strip()}
-
-    total_gt = 0
-    found = 0
-    total_cand_pairs = 0
-    max_cand = 0
-    s1_with_cands = 0
-    s1_fully_recovered = 0
-
-    for sid in s1_ids:
-        true_set = truth.get(sid, set())
-        cand_set = cands.get(sid, set())
-
-        n_cand = len(cand_set)
-        n_true = len(true_set)
-
-        total_gt += n_true
-        total_cand_pairs += n_cand
-        max_cand = max(max_cand, n_cand)
-
-        if n_cand > 0:
-            s1_with_cands += 1
-
-        hits = len(true_set & cand_set)
-        found += hits
-        if n_true > 0 and hits == n_true:
-            s1_fully_recovered += 1
+            true_set = truth.get(sid, set())
+            n_true = len(true_set)
+            
+            if n_true > 0:
+                raw = row[cand_col].strip() if row[cand_col] else ""
+                if raw:
+                    cand_set = {x.strip() for x in raw.split(",") if x.strip()}
+                    hits = len(true_set & cand_set)
+                    found += hits
+                    if hits == n_true:
+                        s1_fully_recovered += 1
 
     n_s1 = len(s1_ids)
     lost = total_gt - found
@@ -232,7 +237,11 @@ def main():
 
     # 4. Compute Unions using DuckDB
     con = duckdb.connect(str(out_dir / "union.duckdb"))
-    con.execute("PRAGMA temp_directory='{}'".format(str(out_dir).replace('\\', '/')))
+    con.execute("PRAGMA memory_limit='6GB'")
+    con.execute("PRAGMA threads=2")
+    con.execute("PRAGMA preserve_insertion_order=false")
+    tmp_dir_str = str(out_dir).replace('\\', '/')
+    con.execute(f"PRAGMA temp_directory='{tmp_dir_str}'")
     
     union_metrics = {}
     for mdf in args.max_df:
@@ -254,6 +263,7 @@ def main():
             
         full_union_query = " UNION ".join(union_queries)
         s1_parquet = str(mini_cache / "train_source1.parquet").replace('\\', '/')
+        union_tsv_str = str(union_tsv).replace('\\', '/')
         
         con.execute(f"""
             COPY (
@@ -277,7 +287,7 @@ def main():
                     COALESCE(agg_pairs.candidate_entity_ids, '') AS candidate_entity_ids
                 FROM s1_all
                 LEFT JOIN agg_pairs ON s1_all.source1_entity_id = agg_pairs.source1_entity_id
-            ) TO '{str(union_tsv).replace('\\', '/')}' (FORMAT CSV, DELIMITER '\\t', HEADER)
+            ) TO '{union_tsv_str}' (FORMAT CSV, DELIMITER '\\t', HEADER)
         """)
         
         metrics = _evaluate_tsv(union_tsv, truth, s1_ids)
