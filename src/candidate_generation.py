@@ -633,17 +633,34 @@ def evaluate_candidates(
     }
 
 
-
-
 def generate_candidates_memory_safe(
     split: str,
     cache_dir: str | Path,
     out_file: str | Path,
     blocks: list[str] | None = None,
     verbose: bool = True,
-    chunk_size: int = 25_000
+    chunk_size: int = 25_000,
+    db_path: str | Path | None = None,
+    memory_limit: str = "6GB",
+    threads: int = 2,
 ) -> tuple[int, int, int]:
+    """
+    Memory-capped, disk-spilling candidate generation.
+
+    Key design decisions
+    --------------------
+    A. S1 is NEVER fully materialised.  A narrow VIEW (entity_id, name_norm,
+       address_norm, country) is created over the Parquet file; chunks are
+       pulled with LIMIT / OFFSET.
+    B. DuckDB uses a *file-backed* database so intermediate spills go to disk.
+    C. RHS token/address/country relations live inside the file-backed DB and
+       can spill when memory_limit is reached.
+    D. All S1 entity IDs for the final left-join are read directly from the
+       Parquet file — no pandas list.
+    E. The final aggregation and TSV write happen inside DuckDB (COPY TO).
+    """
     import gc
+    import os
     import duckdb
     import pyarrow.parquet as pq
     import sys
@@ -651,223 +668,331 @@ def generate_candidates_memory_safe(
     import math
     import time
     from pathlib import Path
-    
+
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from candidate_generation import _STOP_TOKENS
-    
+
     if blocks is None:
         blocks = ["exact", "token", "address", "prefix", "country_token", "fuzzy"]
 
     cache_dir = Path(cache_dir)
-    s1_path = cache_dir / f"{split}_source1.parquet"
-    
+    s1_path   = cache_dir / f"{split}_source1.parquet"
+
     n_s1 = pq.read_metadata(s1_path).num_rows
-    con = duckdb.connect(':memory:')
-    
-    if verbose:
-        print()
-        print(f"Loading S1 into DuckDB for chunking...", flush=True)
-    con.execute(f"CREATE TABLE s1_table AS SELECT *, row_number() OVER () - 1 as rn FROM read_parquet('{s1_path}')")
-    
-    all_s1_ids = con.execute("SELECT entity_id FROM s1_table ORDER BY rn").df()['entity_id'].tolist()
-    
-    con.execute("CREATE TABLE stop_words (token VARCHAR)")
-    con.executemany("INSERT INTO stop_words VALUES (?)", [(t,) for t in _STOP_TOKENS])
-    
-    failed_blocks = []
-    
     n_s2 = pq.read_metadata(cache_dir / f"{split}_source2.parquet").num_rows
     n_s3 = pq.read_metadata(cache_dir / f"{split}_source3.parquet").num_rows
 
+    # ── C. File-backed DuckDB + PRAGMAs ──────────────────────────────────────
+    if db_path is None:
+        # Default: /content on Colab, cwd otherwise
+        default_root = Path("/content") if Path("/content").exists() else Path.cwd()
+        db_path = default_root / "m4_work.duckdb"
+    db_path = Path(db_path)
+    db_path.unlink(missing_ok=True)          # start clean each run
+    db_path_wal = db_path.with_suffix(".duckdb.wal")
+    db_path_wal.unlink(missing_ok=True)
+
+    tmp_spill = db_path.parent / "m4_duckdb_tmp"
+    tmp_spill.mkdir(parents=True, exist_ok=True)
+
+    if verbose:
+        print(f"Opening file-backed DuckDB at {db_path}", flush=True)
+        print(f"  memory_limit={memory_limit}  threads={threads}", flush=True)
+        print(f"  temp_directory={tmp_spill}", flush=True)
+
+    con = duckdb.connect(str(db_path))
+    con.execute(f"PRAGMA memory_limit='{memory_limit}'")
+    con.execute(f"PRAGMA threads={threads}")
+    con.execute(f"PRAGMA temp_directory='{tmp_spill}'")
+
+    # ── A. Narrow S1 VIEW — never materialise all columns ────────────────────
+    if verbose:
+        print(f"\nCreating narrow S1 view over {s1_path.name} ({n_s1:,} rows)...", flush=True)
+
+    # Use forward slashes for DuckDB path strings (works on all platforms)
+    s1_path_str = str(s1_path).replace("\\", "/")
+    con.execute(f"""
+        CREATE OR REPLACE VIEW s1_view AS
+        SELECT entity_id, name_norm, address_norm, country
+        FROM read_parquet('{s1_path_str}')
+    """)
+
+    # Stop-words table (tiny, fine in the DB)
+    con.execute("CREATE OR REPLACE TABLE stop_words (token VARCHAR)")
+    con.executemany("INSERT INTO stop_words VALUES (?)", [(t,) for t in _STOP_TOKENS])
+
+    failed_blocks = []
+    n_chunks = math.ceil(n_s1 / chunk_size)
+
     with tempfile.TemporaryDirectory(dir=Path.cwd()) as temp_dir:
         temp_dir_path = Path(temp_dir)
-        part_files = []
-        
-        n_chunks = math.ceil(n_s1 / chunk_size)
-        
+        part_files: list[str] = []
+
         for rhs_name, src_name in [("S2", "source2"), ("S3", "source3")]:
-            rhs_path = cache_dir / f"{split}_{src_name}.parquet"
+            rhs_path     = cache_dir / f"{split}_{src_name}.parquet"
+            rhs_path_str = str(rhs_path).replace("\\", "/")
+
             if verbose:
-                print()
-                print(f"Processing {rhs_name} ({src_name})...", flush=True)
-                
-            con.execute(f"CREATE OR REPLACE VIEW rhs_view AS SELECT * FROM read_parquet('{rhs_path}')")
-            
+                print(f"\nProcessing {rhs_name} ({src_name})...", flush=True)
+
+            con.execute(f"""
+                CREATE OR REPLACE VIEW rhs_view AS
+                SELECT * FROM read_parquet('{rhs_path_str}')
+            """)
+
+            # ── D. RHS token/address/country relations: disk-spill-capable ───
             if verbose:
                 print(f"  Building RHS relations for {rhs_name}...", flush=True)
-            
             t0 = time.time()
+
             if "token" in blocks:
                 con.execute("""
                     CREATE OR REPLACE TABLE rhs_token_dist AS
-                    SELECT entity_id, token FROM (
-                        SELECT entity_id, unnest(string_split(name_norm, ' ')) as token
-                        FROM rhs_view WHERE name_norm IS NOT NULL
+                    SELECT entity_id, token
+                    FROM (
+                        SELECT entity_id,
+                               unnest(string_split(name_norm, ' ')) AS token
+                        FROM rhs_view
+                        WHERE name_norm IS NOT NULL
                     )
-                    WHERE length(token) >= 4 AND token NOT IN (SELECT token FROM stop_words)
+                    WHERE length(token) >= 4
+                      AND token NOT IN (SELECT token FROM stop_words)
                 """)
+
             if "address" in blocks:
                 con.execute("""
                     CREATE OR REPLACE TABLE rhs_addr_num AS
-                    SELECT entity_id, token FROM (
-                        SELECT entity_id, unnest(string_split(address_norm, ' ')) as token
-                        FROM rhs_view WHERE address_norm IS NOT NULL
+                    SELECT entity_id, token
+                    FROM (
+                        SELECT entity_id,
+                               unnest(string_split(address_norm, ' ')) AS token
+                        FROM rhs_view
+                        WHERE address_norm IS NOT NULL
                     )
                     WHERE regexp_matches(token, '[0-9]')
                 """)
+
             if "country_token" in blocks:
                 con.execute("""
                     CREATE OR REPLACE TABLE rhs_country_dist AS
-                    SELECT entity_id, ctry, token FROM (
-                        SELECT entity_id, lower(trim(country)) as ctry, unnest(string_split(name_norm, ' ')) as token
-                        FROM rhs_view WHERE name_norm IS NOT NULL AND country IS NOT NULL AND trim(country) != ''
+                    SELECT entity_id, ctry, token
+                    FROM (
+                        SELECT entity_id,
+                               lower(trim(country)) AS ctry,
+                               unnest(string_split(name_norm, ' ')) AS token
+                        FROM rhs_view
+                        WHERE name_norm IS NOT NULL
+                          AND country IS NOT NULL
+                          AND trim(country) != ''
                     )
-                    WHERE length(token) >= 4 AND token NOT IN (SELECT token FROM stop_words)
+                    WHERE length(token) >= 4
+                      AND token NOT IN (SELECT token FROM stop_words)
                 """)
+
             if verbose:
                 print(f"  RHS relations built in {time.time() - t0:.1f}s", flush=True)
-            
+
+            # ── G. Process one S1 chunk at a time ────────────────────────────
             for block_name in blocks:
-                if verbose:
-                    print(f"  Running Block [{block_name:12s}] x {rhs_name}...", flush=True)
-                
-                t_block = time.time()
+                t_block    = time.time()
                 block_pairs = 0
-                
+
                 try:
                     for chunk_idx in range(n_chunks):
                         start_row = chunk_idx * chunk_size
-                        end_row = start_row + chunk_size
-                        
-                        con.execute(f"CREATE OR REPLACE VIEW s1_chunk_view AS SELECT * FROM s1_table WHERE rn >= {start_row} AND rn < {end_row}")
-                        
+
+                        # Status log before each chunk (requirement K)
+                        if verbose:
+                            try:
+                                import psutil
+                                rss_gb = psutil.Process().memory_info().rss / 1e9
+                                ram_str = f"RAM={rss_gb:.2f}GB"
+                            except Exception:
+                                ram_str = "RAM=n/a"
+                            print(
+                                f"    source={rhs_name} block={block_name} "
+                                f"chunk={chunk_idx+1}/{n_chunks} {ram_str}",
+                                flush=True,
+                            )
+
                         out_path = temp_dir_path / f"{rhs_name}_{block_name}_{chunk_idx}.parquet"
-                        
+
+                        # ── E. Chunk via LIMIT/OFFSET on the narrow VIEW ──────
+                        chunk_cte = (
+                            f"SELECT entity_id, name_norm, address_norm, country "
+                            f"FROM s1_view "
+                            f"LIMIT {chunk_size} OFFSET {start_row}"
+                        )
+
                         if block_name == "exact":
                             query = f"""
                                 COPY (
-                                    SELECT DISTINCT s1.entity_id AS source1_entity_id, rhs.entity_id AS candidate_entity_id
-                                    FROM s1_chunk_view s1
-                                    JOIN rhs_view rhs ON s1.name_norm = rhs.name_norm
-                                    WHERE s1.name_norm IS NOT NULL AND s1.name_norm != ''
+                                    WITH s1_chunk AS ({chunk_cte})
+                                    SELECT DISTINCT
+                                        s1.entity_id          AS source1_entity_id,
+                                        rhs.entity_id         AS candidate_entity_id
+                                    FROM s1_chunk s1
+                                    JOIN rhs_view rhs
+                                      ON s1.name_norm = rhs.name_norm
+                                    WHERE s1.name_norm IS NOT NULL
+                                      AND s1.name_norm != ''
                                 ) TO '{out_path}' (FORMAT PARQUET)
                             """
                             con.execute(query)
-                            
+
                         elif block_name == "prefix":
                             query = f"""
                                 COPY (
-                                    SELECT DISTINCT s1.entity_id AS source1_entity_id, rhs.entity_id AS candidate_entity_id
-                                    FROM s1_chunk_view s1
-                                    JOIN rhs_view rhs ON substr(s1.name_norm, 1, 4) = substr(rhs.name_norm, 1, 4)
-                                    WHERE s1.name_norm IS NOT NULL AND length(s1.name_norm) >= 4
+                                    WITH s1_chunk AS ({chunk_cte})
+                                    SELECT DISTINCT
+                                        s1.entity_id          AS source1_entity_id,
+                                        rhs.entity_id         AS candidate_entity_id
+                                    FROM s1_chunk s1
+                                    JOIN rhs_view rhs
+                                      ON substr(s1.name_norm, 1, 4) = substr(rhs.name_norm, 1, 4)
+                                    WHERE s1.name_norm  IS NOT NULL AND length(s1.name_norm)  >= 4
                                       AND rhs.name_norm IS NOT NULL AND length(rhs.name_norm) >= 4
                                 ) TO '{out_path}' (FORMAT PARQUET)
                             """
                             con.execute(query)
-                            
+
                         elif block_name == "token":
                             query = f"""
                                 COPY (
-                                    WITH s1_tokens AS (
-                                        SELECT entity_id, unnest(string_split(name_norm, ' ')) as token
-                                        FROM s1_chunk_view WHERE name_norm IS NOT NULL
+                                    WITH s1_chunk AS ({chunk_cte}),
+                                    s1_tokens AS (
+                                        SELECT entity_id,
+                                               unnest(string_split(name_norm, ' ')) AS token
+                                        FROM s1_chunk
+                                        WHERE name_norm IS NOT NULL
                                     ),
                                     s1_dist AS (
                                         SELECT entity_id, token FROM s1_tokens
-                                        WHERE length(token) >= 4 AND token NOT IN (SELECT token FROM stop_words)
+                                        WHERE length(token) >= 4
+                                          AND token NOT IN (SELECT token FROM stop_words)
                                     )
-                                    SELECT DISTINCT s1_dist.entity_id AS source1_entity_id, rhs_token_dist.entity_id AS candidate_entity_id
+                                    SELECT DISTINCT
+                                        s1_dist.entity_id          AS source1_entity_id,
+                                        rhs_token_dist.entity_id   AS candidate_entity_id
                                     FROM s1_dist
-                                    JOIN rhs_token_dist ON s1_dist.token = rhs_token_dist.token
+                                    JOIN rhs_token_dist
+                                      ON s1_dist.token = rhs_token_dist.token
                                 ) TO '{out_path}' (FORMAT PARQUET)
                             """
                             con.execute(query)
-                            
+
                         elif block_name == "address":
                             query = f"""
                                 COPY (
-                                    WITH s1_tokens AS (
-                                        SELECT entity_id, unnest(string_split(address_norm, ' ')) as token
-                                        FROM s1_chunk_view WHERE address_norm IS NOT NULL
+                                    WITH s1_chunk AS ({chunk_cte}),
+                                    s1_tokens AS (
+                                        SELECT entity_id,
+                                               unnest(string_split(address_norm, ' ')) AS token
+                                        FROM s1_chunk
+                                        WHERE address_norm IS NOT NULL
                                     ),
                                     s1_num AS (
                                         SELECT entity_id, token FROM s1_tokens
                                         WHERE regexp_matches(token, '[0-9]')
                                     )
-                                    SELECT DISTINCT s1_num.entity_id AS source1_entity_id, rhs_addr_num.entity_id AS candidate_entity_id
+                                    SELECT DISTINCT
+                                        s1_num.entity_id       AS source1_entity_id,
+                                        rhs_addr_num.entity_id AS candidate_entity_id
                                     FROM s1_num
-                                    JOIN rhs_addr_num ON s1_num.token = rhs_addr_num.token
+                                    JOIN rhs_addr_num
+                                      ON s1_num.token = rhs_addr_num.token
                                 ) TO '{out_path}' (FORMAT PARQUET)
                             """
                             con.execute(query)
-                            
+
                         elif block_name == "country_token":
                             query = f"""
                                 COPY (
-                                    WITH s1_tokens AS (
-                                        SELECT entity_id, lower(trim(country)) as ctry, unnest(string_split(name_norm, ' ')) as token
-                                        FROM s1_chunk_view WHERE name_norm IS NOT NULL AND country IS NOT NULL AND trim(country) != ''
+                                    WITH s1_chunk AS ({chunk_cte}),
+                                    s1_tokens AS (
+                                        SELECT entity_id,
+                                               lower(trim(country)) AS ctry,
+                                               unnest(string_split(name_norm, ' ')) AS token
+                                        FROM s1_chunk
+                                        WHERE name_norm IS NOT NULL
+                                          AND country IS NOT NULL
+                                          AND trim(country) != ''
                                     ),
                                     s1_dist AS (
                                         SELECT entity_id, ctry, token FROM s1_tokens
-                                        WHERE length(token) >= 4 AND token NOT IN (SELECT token FROM stop_words)
+                                        WHERE length(token) >= 4
+                                          AND token NOT IN (SELECT token FROM stop_words)
                                     )
-                                    SELECT DISTINCT s1_dist.entity_id AS source1_entity_id, rhs_country_dist.entity_id AS candidate_entity_id
+                                    SELECT DISTINCT
+                                        s1_dist.entity_id            AS source1_entity_id,
+                                        rhs_country_dist.entity_id   AS candidate_entity_id
                                     FROM s1_dist
-                                    JOIN rhs_country_dist ON s1_dist.ctry = rhs_country_dist.ctry AND s1_dist.token = rhs_country_dist.token
+                                    JOIN rhs_country_dist
+                                      ON s1_dist.ctry  = rhs_country_dist.ctry
+                                     AND s1_dist.token = rhs_country_dist.token
                                 ) TO '{out_path}' (FORMAT PARQUET)
                             """
                             con.execute(query)
-                            
+
                         elif block_name == "fuzzy":
                             try:
                                 from rapidfuzz.fuzz import token_sort_ratio
                             except ImportError:
                                 continue
-                                
+
                             fuzzy_join_path = temp_dir_path / f"{rhs_name}_fuzzy_join_{chunk_idx}.parquet"
                             con.execute(f"""
                                 COPY (
-                                    SELECT s1.entity_id as s1_id, s1.name_norm as s1_name,
-                                           rhs.entity_id as rhs_id, rhs.name_norm as rhs_name
-                                    FROM s1_chunk_view s1
-                                    JOIN rhs_view rhs ON substr(s1.name_norm, 1, 3) = substr(rhs.name_norm, 1, 3)
-                                    WHERE s1.name_norm IS NOT NULL AND length(s1.name_norm) >= 3
+                                    WITH s1_chunk AS ({chunk_cte})
+                                    SELECT
+                                        s1.entity_id   AS s1_id,
+                                        s1.name_norm   AS s1_name,
+                                        rhs.entity_id  AS rhs_id,
+                                        rhs.name_norm  AS rhs_name
+                                    FROM s1_chunk s1
+                                    JOIN rhs_view rhs
+                                      ON substr(s1.name_norm, 1, 3) = substr(rhs.name_norm, 1, 3)
+                                    WHERE s1.name_norm  IS NOT NULL AND length(s1.name_norm)  >= 3
                                       AND rhs.name_norm IS NOT NULL AND length(rhs.name_norm) >= 3
                                 ) TO '{fuzzy_join_path}' (FORMAT PARQUET)
                             """)
-                            
-                            import pandas as pd
-                            import pyarrow as pa
+
+                            import pandas as _pd
+                            import pyarrow as _pa
                             try:
                                 parquet_file = pq.ParquetFile(fuzzy_join_path)
-                                writer = None
-                                raw_out = temp_dir_path / f"{out_path.name}_raw.parquet"
-                                
+                                writer       = None
+                                raw_out      = temp_dir_path / f"{out_path.name}_raw.parquet"
+
                                 for batch in parquet_file.iter_batches(batch_size=200_000):
-                                    df_batch = batch.to_pandas()
-                                    df_batch["score"] = df_batch.apply(lambda row: token_sort_ratio(row["s1_name"], row["rhs_name"]), axis=1)
+                                    df_batch          = batch.to_pandas()
+                                    df_batch["score"] = df_batch.apply(
+                                        lambda r: token_sort_ratio(r["s1_name"], r["rhs_name"]), axis=1
+                                    )
                                     filtered = df_batch[df_batch["score"] >= 80.0]
-                                    
                                     if not filtered.empty:
-                                        batch_out = pa.RecordBatch.from_pandas(filtered[["s1_id", "rhs_id", "score"]])
+                                        batch_out = _pa.RecordBatch.from_pandas(
+                                            filtered[["s1_id", "rhs_id", "score"]]
+                                        )
                                         if writer is None:
                                             writer = pq.ParquetWriter(raw_out, batch_out.schema)
                                         writer.write_batch(batch_out)
-                                        
+
                                 if writer is not None:
                                     writer.close()
                                     con.execute(f"""
                                         COPY (
                                             WITH ranked AS (
-                                                SELECT s1_id AS source1_entity_id, rhs_id AS candidate_entity_id,
-                                                       row_number() OVER (PARTITION BY s1_id ORDER BY score DESC) as rn
+                                                SELECT
+                                                    s1_id  AS source1_entity_id,
+                                                    rhs_id AS candidate_entity_id,
+                                                    row_number() OVER (
+                                                        PARTITION BY s1_id ORDER BY score DESC
+                                                    ) AS rn
                                                 FROM read_parquet('{raw_out}')
                                             )
                                             SELECT source1_entity_id, candidate_entity_id
-                                            FROM ranked
-                                            WHERE rn <= 50
+                                            FROM ranked WHERE rn <= 50
                                         ) TO '{out_path}' (FORMAT PARQUET)
                                     """)
                                     raw_out.unlink(missing_ok=True)
@@ -876,26 +1001,40 @@ def generate_candidates_memory_safe(
                             finally:
                                 fuzzy_join_path.unlink(missing_ok=True)
 
+                        # Tally pairs for this chunk (requirement K)
                         if out_path.exists():
-                            chunk_pairs = con.execute(f"SELECT COUNT(*) FROM read_parquet('{out_path}')").fetchone()[0]
+                            chunk_pairs = con.execute(
+                                f"SELECT COUNT(*) FROM read_parquet('{out_path}')"
+                            ).fetchone()[0]
                             if chunk_pairs > 0:
                                 part_files.append(str(out_path))
                                 block_pairs += chunk_pairs
+                                if verbose:
+                                    elapsed = time.time() - t_block
+                                    print(
+                                        f"      -> chunk {chunk_idx+1}: {chunk_pairs:,} pairs "
+                                        f"(total so far {block_pairs:,}, {elapsed:.1f}s)",
+                                        flush=True,
+                                    )
                             else:
                                 out_path.unlink(missing_ok=True)
-                                
-                        if verbose and (chunk_idx + 1) % 5 == 0:
-                            print(f"    source={rhs_name} block={block_name} chunk={chunk_idx+1}/{n_chunks}", flush=True)
 
                     if verbose:
-                        print(f"  -> {block_name} x {rhs_name}: {block_pairs:>8,} pairs TOTAL ({time.time() - t_block:.1f}s)", flush=True)
+                        print(
+                            f"  -> {block_name} x {rhs_name}: {block_pairs:>8,} pairs TOTAL "
+                            f"({time.time() - t_block:.1f}s)",
+                            flush=True,
+                        )
 
                 except Exception as exc:
+                    import traceback
                     tag = f"{block_name}/{rhs_name}"
                     failed_blocks.append(tag)
                     print(f"  Block [{block_name}] x {rhs_name} FAILED: {exc}", flush=True)
-                    
-            con.execute("DROP VIEW IF EXISTS rhs_view")
+                    traceback.print_exc()
+
+            # Drop per-source RHS tables before moving to the next source
+            con.execute("DROP VIEW  IF EXISTS rhs_view")
             con.execute("DROP TABLE IF EXISTS rhs_token_dist")
             con.execute("DROP TABLE IF EXISTS rhs_addr_num")
             con.execute("DROP TABLE IF EXISTS rhs_country_dist")
@@ -904,18 +1043,26 @@ def generate_candidates_memory_safe(
         if failed_blocks:
             print()
             print(f"  *** {len(failed_blocks)} block(s) FAILED: {failed_blocks} ***", flush=True)
-            raise RuntimeError(f"Candidate generation failed for {len(failed_blocks)} block(s): {failed_blocks}")
+            raise RuntimeError(
+                f"Candidate generation failed for {len(failed_blocks)} block(s): {failed_blocks}"
+            )
 
+        # ── I. Final aggregation + TSV write entirely in DuckDB ───────────────
+        out_file_str = str(out_file).replace("\\", "/")
         if not part_files:
-            import pandas as pd
-            pd.DataFrame(columns=["source1_entity_id", "candidate_entity_ids"]).to_csv(out_file, sep="	", index=False)
+            # Write header-only TSV so every S1 entity appears
+            con.execute(f"""
+                COPY (
+                    SELECT entity_id AS source1_entity_id, '' AS candidate_entity_ids
+                    FROM s1_view
+                ) TO '{out_file_str}' (FORMAT CSV, DELIMITER '\t', HEADER)
+            """)
         else:
             if verbose:
-                print()
-                print(f"Merging {len(part_files)} block files with DuckDB...", flush=True)
-            
+                print(f"\nMerging {len(part_files)} block files with DuckDB...", flush=True)
+
+            # ── B. S1 IDs for the left-join come from s1_view, not a pandas list
             parquet_list_str = ", ".join([f"'{p}'" for p in part_files])
-            
             t_merge = time.time()
             con.execute(f"""
                 COPY (
@@ -924,29 +1071,41 @@ def generate_candidates_memory_safe(
                         FROM read_parquet([{parquet_list_str}])
                     ),
                     agg_pairs AS (
-                        SELECT source1_entity_id, string_agg(candidate_entity_id, ',') as candidate_entity_ids
+                        SELECT source1_entity_id,
+                               string_agg(candidate_entity_id, ',') AS candidate_entity_ids
                         FROM distinct_pairs
                         GROUP BY source1_entity_id
                     ),
                     s1_all AS (
-                        SELECT entity_id as source1_entity_id
-                        FROM s1_table
+                        SELECT entity_id AS source1_entity_id
+                        FROM s1_view
                     )
-                    SELECT s1_all.source1_entity_id, COALESCE(agg_pairs.candidate_entity_ids, '') as candidate_entity_ids
+                    SELECT
+                        s1_all.source1_entity_id,
+                        COALESCE(agg_pairs.candidate_entity_ids, '') AS candidate_entity_ids
                     FROM s1_all
-                    LEFT JOIN agg_pairs ON s1_all.source1_entity_id = agg_pairs.source1_entity_id
+                    LEFT JOIN agg_pairs
+                           ON s1_all.source1_entity_id = agg_pairs.source1_entity_id
                     ORDER BY s1_all.source1_entity_id
-                ) TO '{out_file}' (FORMAT CSV, DELIMITER '	', HEADER)
+                ) TO '{out_file_str}' (FORMAT CSV, DELIMITER '\t', HEADER)
             """)
             if verbose:
                 print(f"  Merged in {time.time() - t_merge:.1f}s", flush=True)
 
     if verbose:
-        s1_covered = con.execute(f"SELECT COUNT(*) FROM read_csv_auto('{out_file}', delim='	', header=True) WHERE candidate_entity_ids IS NOT NULL AND candidate_entity_ids != ''").fetchone()[0]
+        out_file_str_esc = out_file_str.replace("'", "''")   # escape single quotes
+        s1_covered = con.execute(
+            f"SELECT COUNT(*) FROM read_csv_auto('{out_file_str_esc}', "
+            f"delim='\t', header=True) "
+            f"WHERE candidate_entity_ids IS NOT NULL AND candidate_entity_ids != ''"
+        ).fetchone()[0]
         print()
         print(f"  S1 entities with >=1 candidate: {s1_covered:,} / {n_s1:,}")
 
     con.close()
+    # Clean up the work DB file
+    db_path.unlink(missing_ok=True)
+    db_path_wal.unlink(missing_ok=True)
     return n_s1, n_s2, n_s3
 
 
