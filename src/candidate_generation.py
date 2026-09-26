@@ -643,6 +643,7 @@ def generate_candidates_memory_safe(
     db_path: str | Path | None = None,
     memory_limit: str = "6GB",
     threads: int = 2,
+    token_max_df: int = 500,
 ) -> tuple[int, int, int]:
     """
     Memory-capped, disk-spilling candidate generation.
@@ -658,6 +659,13 @@ def generate_candidates_memory_safe(
     D. All S1 entity IDs for the final left-join are read directly from the
        Parquet file — no pandas list.
     E. The final aggregation and TSV write happen inside DuckDB (COPY TO).
+    F. Token blocking is FREQUENCY-AWARE.  Only tokens whose document
+       frequency (distinct RHS entities containing the token) is at most
+       token_max_df are kept in the index.  High-frequency tokens (e.g.
+       "bank", "global", "technologies") are treated like stop-words and
+       dropped, preventing the O(N*M) candidate explosion seen without
+       this filter.  Default token_max_df=500 is a starting point;
+       tune it by comparing benchmark pair counts vs. recall.
     """
     import gc
     import os
@@ -704,6 +712,7 @@ def generate_candidates_memory_safe(
     con.execute(f"PRAGMA memory_limit='{memory_limit}'")
     con.execute(f"PRAGMA threads={threads}")
     con.execute(f"PRAGMA temp_directory='{tmp_spill}'")
+    con.execute("PRAGMA preserve_insertion_order=false")  # reduces merge peak RAM
 
     # ── A. Narrow S1 VIEW — never materialise all columns ────────────────────
     if verbose:
@@ -746,9 +755,11 @@ def generate_candidates_memory_safe(
             t0 = time.time()
 
             if "token" in blocks:
+                # ── F. Frequency-aware token index ───────────────────────────
+                # Pass 1: compute per-token document frequency (distinct entities)
                 con.execute("""
-                    CREATE OR REPLACE TABLE rhs_token_dist AS
-                    SELECT entity_id, token
+                    CREATE OR REPLACE TABLE rhs_token_df AS
+                    SELECT token, COUNT(DISTINCT entity_id) AS df
                     FROM (
                         SELECT entity_id,
                                unnest(string_split(name_norm, ' ')) AS token
@@ -757,7 +768,41 @@ def generate_candidates_memory_safe(
                     )
                     WHERE length(token) >= 4
                       AND token NOT IN (SELECT token FROM stop_words)
+                    GROUP BY token
                 """)
+
+                if verbose:
+                    stats = con.execute("""
+                        SELECT
+                            COUNT(*)                              AS total_tokens,
+                            COUNT(*) FILTER (df <= ?)             AS usable_tokens,
+                            MAX(df)                               AS max_df,
+                            PERCENTILE_CONT(0.5) WITHIN GROUP
+                                (ORDER BY df)                     AS median_df
+                        FROM rhs_token_df
+                    """, [token_max_df]).fetchone()
+                    print(
+                        f"  Token index stats (max_df={token_max_df}): "
+                        f"total={stats[0]:,}  usable={stats[1]:,}  "
+                        f"max_df={stats[2]:,}  median_df={stats[3]}",
+                        flush=True,
+                    )
+
+                # Pass 2: build the actual selective index
+                con.execute(f"""
+                    CREATE OR REPLACE TABLE rhs_token_dist AS
+                    SELECT e.entity_id, e.token
+                    FROM (
+                        SELECT entity_id,
+                               unnest(string_split(name_norm, ' ')) AS token
+                        FROM rhs_view
+                        WHERE name_norm IS NOT NULL
+                    ) e
+                    JOIN rhs_token_df d ON e.token = d.token
+                    WHERE d.df <= {token_max_df}
+                """)
+
+                con.execute("DROP TABLE IF EXISTS rhs_token_df")
 
             if "address" in blocks:
                 con.execute("""
@@ -1064,6 +1109,10 @@ def generate_candidates_memory_safe(
             # ── B. S1 IDs for the left-join come from s1_view, not a pandas list
             parquet_list_str = ", ".join([f"'{p}'" for p in part_files])
             t_merge = time.time()
+            # ORDER BY is intentionally omitted: sorting 294M+ rows is the
+            # single biggest memory spike in the merge step.  The output is
+            # still correct (one row per S1 entity); the row order is
+            # unspecified but that is fine for the official TSV format.
             con.execute(f"""
                 COPY (
                     WITH distinct_pairs AS (
@@ -1086,7 +1135,6 @@ def generate_candidates_memory_safe(
                     FROM s1_all
                     LEFT JOIN agg_pairs
                            ON s1_all.source1_entity_id = agg_pairs.source1_entity_id
-                    ORDER BY s1_all.source1_entity_id
                 ) TO '{out_file_str}' (FORMAT CSV, DELIMITER '\t', HEADER)
             """)
             if verbose:
