@@ -774,17 +774,21 @@ def generate_candidates_memory_safe(
                 if verbose:
                     stats = con.execute("""
                         SELECT
-                            COUNT(*)                              AS total_tokens,
-                            COUNT(*) FILTER (df <= ?)             AS usable_tokens,
-                            MAX(df)                               AS max_df,
-                            PERCENTILE_CONT(0.5) WITHIN GROUP
-                                (ORDER BY df)                     AS median_df
+                            COUNT(*)                                    AS total_tokens,
+                            COUNT(*) FILTER (df <= ?)                   AS usable_tokens,
+                            COALESCE(MAX(df), 0)                        AS max_df,
+                            COALESCE(
+                                PERCENTILE_CONT(0.5) WITHIN GROUP
+                                    (ORDER BY df),
+                                0
+                            )                                           AS median_df
                         FROM rhs_token_df
                     """, [token_max_df]).fetchone()
+                    total, usable, max_df_val, median_df_val = stats
                     print(
                         f"  Token index stats (max_df={token_max_df}): "
-                        f"total={stats[0]:,}  usable={stats[1]:,}  "
-                        f"max_df={stats[2]:,}  median_df={stats[3]}",
+                        f"total={total:,}  usable={usable:,}  "
+                        f"max_df={max_df_val:,}  median_df={median_df_val}",
                         flush=True,
                     )
 
