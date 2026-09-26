@@ -8,6 +8,9 @@ dataset/
 !output/.gitkeep
 !output/candidate_pairs.tsv
 
+# ── Notebook backups ──────────────────────────────────────────────────────────
+*.ipynb.bak
+
 # ── M2 Preprocessing cache (rebuilt locally) ─────────────────────────────────
 cache/
 *.parquet
