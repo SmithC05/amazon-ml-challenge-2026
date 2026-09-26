@@ -1,0 +1,171 @@
+﻿======================================================================
+PHASE 1 ΓÇö M2 CACHE VERIFICATION (read-only)
+======================================================================
+
+=== CACHE DIRECTORY SEARCH ===
+  C:\Users\Mr Sanjay Balan M\project\ml challenge\amazon-ml-challenge-2026\cache  exists=True
+    train_source1.parquet  360.6 MB
+  C:\Users\Mr Sanjay Balan M\project\ml challenge\amazon-ml-challenge-2026\dataset\processed\m2_cache  exists=False
+  C:\Users\Mr Sanjay Balan M\project\ml challenge\amazon-ml-challenge-2026\cache_chunked  exists=True
+    (empty)
+
+=== EXPECTED SCHEMA (14 columns) ===
+   1. entity_id
+   2. business_name
+   3. business_address
+   4. country
+   5. name_norm
+   6. address_norm
+   7. name_tokens
+   8. address_tokens
+   9. name_token_count
+  10. address_token_count
+  11. name_length
+  12. address_length
+  13. name_digits
+  14. address_digits
+
+
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+VERIFYING: train_source1
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  Cache path    : cache\train_source1.parquet
+  Size          : 360.6 MB
+  TSV rows      : 2,206,821
+  Cache rows    : 2,206,821
+  Row count     : PASS
+  Readable      : PASS
+  Schema        : PASS
+  Schema order  : PASS
+  entity_id     : PASS
+  Prefix check  : PASS (bad=0)
+  Norm fields   : PASS
+  Raw fields    : PASS
+  Consistency   : PASS
+
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+VERIFYING: train_source2
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  Cache path    : NOT FOUND
+  Size          : N/A
+  TSV rows      : N/A
+  Cache rows    : N/A
+  Row count     : FAIL
+  Readable      : FAIL
+  Schema        : FAIL
+  Schema order  : FAIL
+  entity_id     : FAIL
+  Prefix check  : FAIL (bad=None)
+  Norm fields   : FAIL
+  Raw fields    : FAIL
+  Consistency   : FAIL
+  ERROR: Cache file NOT FOUND in any candidate directory
+
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+VERIFYING: train_source3
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  Cache path    : NOT FOUND
+  Size          : N/A
+  TSV rows      : N/A
+  Cache rows    : N/A
+  Row count     : FAIL
+  Readable      : FAIL
+  Schema        : FAIL
+  Schema order  : FAIL
+  entity_id     : FAIL
+  Prefix check  : FAIL (bad=None)
+  Norm fields   : FAIL
+  Raw fields    : FAIL
+  Consistency   : FAIL
+  ERROR: Cache file NOT FOUND in any candidate directory
+
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+VERIFYING: test_source1
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  Cache path    : NOT FOUND
+  Size          : N/A
+  TSV rows      : N/A
+  Cache rows    : N/A
+  Row count     : FAIL
+  Readable      : FAIL
+  Schema        : FAIL
+  Schema order  : FAIL
+  entity_id     : FAIL
+  Prefix check  : FAIL (bad=None)
+  Norm fields   : FAIL
+  Raw fields    : FAIL
+  Consistency   : FAIL
+  ERROR: Cache file NOT FOUND in any candidate directory
+
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+VERIFYING: test_source2
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  Cache path    : NOT FOUND
+  Size          : N/A
+  TSV rows      : N/A
+  Cache rows    : N/A
+  Row count     : FAIL
+  Readable      : FAIL
+  Schema        : FAIL
+  Schema order  : FAIL
+  entity_id     : FAIL
+  Prefix check  : FAIL (bad=None)
+  Norm fields   : FAIL
+  Raw fields    : FAIL
+  Consistency   : FAIL
+  ERROR: Cache file NOT FOUND in any candidate directory
+
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+VERIFYING: test_source3
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  Cache path    : NOT FOUND
+  Size          : N/A
+  TSV rows      : N/A
+  Cache rows    : N/A
+  Row count     : FAIL
+  Readable      : FAIL
+  Schema        : FAIL
+  Schema order  : FAIL
+  entity_id     : FAIL
+  Prefix check  : FAIL (bad=None)
+  Norm fields   : FAIL
+  Raw fields    : FAIL
+  Consistency   : FAIL
+  ERROR: Cache file NOT FOUND in any candidate directory
+
+======================================================================
+VERIFICATION TABLE
+======================================================================
+Cache                  TSV Rows      PQ Rows  RowCnt  Schema  Read  EntID  NormF  Consis
+----------------------------------------------------------------------------------------
+train_source1         2,206,821    2,206,821    PASS    PASS  PASS   PASS   PASS    PASS
+train_source2                 0            0    FAIL    FAIL  FAIL   FAIL   FAIL    FAIL
+train_source3                 0            0    FAIL    FAIL  FAIL   FAIL   FAIL    FAIL
+test_source1                  0            0    FAIL    FAIL  FAIL   FAIL   FAIL    FAIL
+test_source2                  0            0    FAIL    FAIL  FAIL   FAIL   FAIL    FAIL
+test_source3                  0            0    FAIL    FAIL  FAIL   FAIL   FAIL    FAIL
+
+======================================================================
+PHASE 1 CACHE VERIFICATION SUMMARY
+======================================================================
+  train_source1     : Γ£à
+  train_source2     : Γ¥î
+  train_source3     : Γ¥î
+  test_source1      : Γ¥î
+  test_source2      : Γ¥î
+  test_source3      : Γ¥î
+
+Total caches verified: 1/6
+
+Errors found:
+  - Cache file NOT FOUND in any candidate directory
+  - Cache file NOT FOUND in any candidate directory
+  - Cache file NOT FOUND in any candidate directory
+  - Cache file NOT FOUND in any candidate directory
+  - Cache file NOT FOUND in any candidate directory
+
+Exact cache path(s):
+  cache\train_source1.parquet
+
+Files modified: NONE
+Phase 1 complete.

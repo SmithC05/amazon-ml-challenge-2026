@@ -235,6 +235,35 @@ def build_cache(
             import pyarrow as pa
             import pyarrow.parquet as pq
 
+            # Fixed canonical schema — must be declared before the loop so
+            # every chunk is cast to the same types regardless of chunk
+            # content.  The critical case: when a chunk's name_tokens or
+            # address_tokens are all empty lists (every row in that chunk
+            # has an empty name/address), pd.str.split() returns empty lists
+            # and PyArrow infers the list element type as `null` instead of
+            # `string`.  A later chunk with actual tokens produces
+            # `list<string>`, causing ParquetWriter to raise a
+            # schema-consistency error and silently truncate the output.
+            #
+            # Minimal fix: define the schema explicitly up front and cast
+            # every chunk table to it.  No new columns, no API changes.
+            _CHUNK_SCHEMA = pa.schema([
+                pa.field("entity_id",           pa.large_string()),
+                pa.field("business_name",        pa.large_string()),
+                pa.field("business_address",     pa.large_string()),
+                pa.field("country",              pa.large_string()),
+                pa.field("name_norm",            pa.large_string()),
+                pa.field("address_norm",         pa.large_string()),
+                pa.field("name_tokens",          pa.list_(pa.string())),
+                pa.field("address_tokens",       pa.list_(pa.string())),
+                pa.field("name_token_count",     pa.int64()),
+                pa.field("address_token_count",  pa.int64()),
+                pa.field("name_length",          pa.int64()),
+                pa.field("address_length",       pa.int64()),
+                pa.field("name_digits",          pa.int64()),
+                pa.field("address_digits",       pa.int64()),
+            ])
+
             writer = None
             total_rows = 0
             try:
@@ -244,10 +273,13 @@ def build_cache(
                 for chunk_raw in reader:
                     chunk_proc = preprocess_dataframe(chunk_raw)
                     table = pa.Table.from_pandas(chunk_proc, preserve_index=False)
+                    # Cast to the fixed schema — makes the writer stable even
+                    # when a chunk contains only empty token lists (null type).
+                    table = table.cast(_CHUNK_SCHEMA)
                     if writer is None:
                         writer = pq.ParquetWriter(
                             cache,
-                            table.schema,
+                            _CHUNK_SCHEMA,
                             compression="snappy",
                         )
                     writer.write_table(table)
