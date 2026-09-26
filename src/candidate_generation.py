@@ -645,7 +645,7 @@ def generate_candidates_memory_safe(
     threads: int = 1,
     token_max_df: int = 500,
     address_max_df: int = 100,
-    prefix_max_df: int = 1000,
+    prefix_max_df: int = 100,
 ) -> tuple[int, int, int]:
     """
     Memory-capped, disk-spilling candidate generation.
@@ -957,6 +957,7 @@ def generate_candidates_memory_safe(
                         chunk_cte = (
                             f"SELECT entity_id, name_norm, address_norm, country "
                             f"FROM s1_view "
+                            f"ORDER BY entity_id "
                             f"LIMIT {chunk_size} OFFSET {start_row}"
                         )
 
@@ -1198,39 +1199,72 @@ def generate_candidates_memory_safe(
             """)
         else:
             if verbose:
-                print(f"\nMerging {len(part_files)} block files with DuckDB...", flush=True)
+                print(f"\nMerging {len(part_files)} block files per S1 chunk...", flush=True)
 
-            # ── B. S1 IDs for the left-join come from s1_view, not a pandas list
-            parquet_list_str = ", ".join([f"'{p}'" for p in part_files])
             t_merge = time.time()
-            # ORDER BY is intentionally omitted: sorting 294M+ rows is the
-            # single biggest memory spike in the merge step.  The output is
-            # still correct (one row per S1 entity); the row order is
-            # unspecified but that is fine for the official TSV format.
-            con.execute(f"""
-                COPY (
-                    WITH distinct_pairs AS (
-                        SELECT DISTINCT source1_entity_id, candidate_entity_id
-                        FROM read_parquet([{parquet_list_str}])
-                    ),
-                    agg_pairs AS (
-                        SELECT source1_entity_id,
-                               string_agg(candidate_entity_id, ',') AS candidate_entity_ids
-                        FROM distinct_pairs
-                        GROUP BY source1_entity_id
-                    ),
-                    s1_all AS (
-                        SELECT entity_id AS source1_entity_id
-                        FROM s1_view
-                    )
-                    SELECT
-                        s1_all.source1_entity_id,
-                        COALESCE(agg_pairs.candidate_entity_ids, '') AS candidate_entity_ids
-                    FROM s1_all
-                    LEFT JOIN agg_pairs
-                           ON s1_all.source1_entity_id = agg_pairs.source1_entity_id
-                ) TO '{out_file_str}' (FORMAT CSV, DELIMITER '\t', HEADER)
-            """)
+            chunk_tsvs = []
+
+            import shutil
+            for chunk_idx in range(n_chunks):
+                # Identify intermediate parquet files belonging to this S1 chunk ONLY
+                chunk_files = [p for p in part_files if p.endswith(f"_{chunk_idx}.parquet")]
+                
+                out_chunk_tsv = temp_dir_path / f"final_chunk_{chunk_idx}.tsv"
+                out_chunk_str = str(out_chunk_tsv).replace("\\", "/")
+                
+                start_row = chunk_idx * chunk_size
+                
+                if not chunk_files:
+                    # No pairs found for this chunk, just output empty candidate lists
+                    con.execute(f"""
+                        COPY (
+                            SELECT entity_id AS source1_entity_id, '' AS candidate_entity_ids
+                            FROM s1_view
+                            ORDER BY entity_id
+                            LIMIT {chunk_size} OFFSET {start_row}
+                        ) TO '{out_chunk_str}' (FORMAT CSV, DELIMITER '\t', HEADER)
+                    """)
+                else:
+                    # Process only this chunk's pair files
+                    chunk_files_str = ", ".join([f"'{p}'" for p in chunk_files])
+                    
+                    con.execute(f"""
+                        COPY (
+                            WITH distinct_pairs AS (
+                                SELECT DISTINCT source1_entity_id, candidate_entity_id
+                                FROM read_parquet([{chunk_files_str}])
+                            ),
+                            agg_pairs AS (
+                                SELECT source1_entity_id,
+                                       string_agg(candidate_entity_id, ',') AS candidate_entity_ids
+                                FROM distinct_pairs
+                                GROUP BY source1_entity_id
+                            ),
+                            s1_all AS (
+                                SELECT entity_id AS source1_entity_id
+                                FROM s1_view
+                                ORDER BY entity_id
+                                LIMIT {chunk_size} OFFSET {start_row}
+                            )
+                            SELECT
+                                s1_all.source1_entity_id,
+                                COALESCE(agg_pairs.candidate_entity_ids, '') AS candidate_entity_ids
+                            FROM s1_all
+                            LEFT JOIN agg_pairs
+                                   ON s1_all.source1_entity_id = agg_pairs.source1_entity_id
+                        ) TO '{out_chunk_str}' (FORMAT CSV, DELIMITER '\t', HEADER)
+                    """)
+                    
+                chunk_tsvs.append(out_chunk_tsv)
+            
+            # Concatenate all chunk TSVs into the final TSV
+            with open(out_file, "wb") as f_out:
+                for i, c_tsv in enumerate(chunk_tsvs):
+                    with open(c_tsv, "rb") as f_in:
+                        if i > 0:
+                            f_in.readline()  # skip header for subsequent chunks
+                        shutil.copyfileobj(f_in, f_out)
+            
             if verbose:
                 print(f"  Merged in {time.time() - t_merge:.1f}s", flush=True)
 
@@ -1271,6 +1305,9 @@ if __name__ == "__main__":
     parser.add_argument("--gt",         default=None, help="Ground truth TSV for evaluation")
     parser.add_argument("--blocks",     nargs="+", default=None)
     parser.add_argument("--build-cache", action="store_true")
+    parser.add_argument("--token-max-df", type=int, default=500)
+    parser.add_argument("--address-max-df", type=int, default=100)
+    parser.add_argument("--prefix-max-df", type=int, default=100)
     args = parser.parse_args()
 
     data_dir  = Path(args.data_dir)
@@ -1291,7 +1328,8 @@ if __name__ == "__main__":
     out_path_obj.parent.mkdir(parents=True, exist_ok=True)
     
     n_s1, n_s2, n_s3 = generate_candidates_memory_safe(
-        split=args.split, cache_dir=cache_dir, out_file=args.output, blocks=args.blocks, verbose=True
+        split=args.split, cache_dir=cache_dir, out_file=args.output, blocks=args.blocks, verbose=True,
+        token_max_df=args.token_max_df, address_max_df=args.address_max_df, prefix_max_df=args.prefix_max_df
     )
 
     import duckdb

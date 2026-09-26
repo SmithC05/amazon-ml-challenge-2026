@@ -1,0 +1,18 @@
+{
+    "n_s1": 2206821,
+    "n_s2": 851167,
+    "n_s3": 856637,
+    "total_candidate_ids": 311707961,
+    "avg_per_s1": 141.2475053481909,
+    "max_per_s1": 2679,
+    "n_with_candidates": 2038507,
+    "n_zero_candidates": 168314,
+    "candidate_recall": 0.590181,
+    "runtime_seconds": 0.0,
+    "production_block_configuration": [
+        "exact",
+        "token (max_df=500)",
+        "address (max_df=100)",
+        "prefix (max_df=100)"
+    ]
+}

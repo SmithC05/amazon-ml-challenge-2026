@@ -6,11 +6,14 @@ dataset/
 *.csv
 # Exception: keep stub output files that are tracked deliberately
 !output/.gitkeep
-!output/candidate_pairs.tsv
 
-# ── Notebook backups ──────────────────────────────────────────────────────────
-*.ipynb.bak
-
+# ── M4 Large Generated Artifacts ─────────────────────────────────────────────
+output/candidate_pairs.tsv
+output/matching_results.tsv
+m4_production/*.tsv
+m4_production/*.duckdb
+m4_benchmark/**/*.duckdb
+m4_duckdb_tmp/
 # ── M2 Preprocessing cache (rebuilt locally) ─────────────────────────────────
 cache/
 *.parquet

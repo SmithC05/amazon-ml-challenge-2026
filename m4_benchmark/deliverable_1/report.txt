@@ -1,0 +1,46 @@
+M4 DELIVERABLE #1: FINALIZED CANDIDATE GENERATION
+===================================================
+
+The candidate generation implementation (src/candidate_generation.py) has been successfully verified, patched for production, and smoke-tested on the real cache.
+
+1. CODE CHANGES REQUIRED
+------------------------
+Yes, one essential fix was required for reproducible production execution. 
+
+2. EXACT CHANGES MADE
+---------------------
+The original `generate_candidates_memory_safe()` function hardcoded `prefix_max_df=1000` and did not expose threshold overrides in the CLI. 
+- Modified the function signature: changed default `prefix_max_df: int = 1000` to `prefix_max_df: int = 100`.
+- Modified the CLI (argparse) to explicitly expose `--token-max-df`, `--address-max-df`, and `--prefix-max-df`.
+This ensures the production CLI command executes EXACTLY the requested configuration without silently falling back to defaults.
+
+3. SMOKE-TEST RESULT
+--------------------
+PASS. 
+A 1,000 S1-entity test cache was successfully processed using the exact production command. The script correctly ran the four requested blocks (exact, token, address, prefix), avoided country_token/fuzzy, utilized DuckDB disk-spilling, and merged the results into the official S1-level TSV format without duplicating entities or candidate IDs.
+
+4. EXACT PRODUCTION COMMAND TO USE NEXT
+---------------------------------------
+For the full TRAIN split (2.2M S1 entities):
+
+py -3.10 src/candidate_generation.py ^
+  --data-dir dataset/train ^
+  --cache-dir cache ^
+  --output output/train_candidates.tsv ^
+  --split train ^
+  --blocks exact token address prefix ^
+  --token-max-df 500 ^
+  --address-max-df 100 ^
+  --prefix-max-df 100
+
+For the full TEST split (1.7M S1 entities):
+
+py -3.10 src/candidate_generation.py ^
+  --data-dir dataset/test ^
+  --cache-dir cache ^
+  --output output/test_candidates.tsv ^
+  --split test ^
+  --blocks exact token address prefix ^
+  --token-max-df 500 ^
+  --address-max-df 100 ^
+  --prefix-max-df 100
