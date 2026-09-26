@@ -1,0 +1,51 @@
+================================================================================
+LEAN UNION COMPARISON (10k S1, S2+S3)
+================================================================================
+
+UNION A: exact + token_500 + address_100 + prefix_100
+--------------------------------------------------------------------------------
+  Total unique pairs      : 1,458,854
+  Avg candidates / S1     : 145.9
+  Max candidates / S1     : 2,020
+  S1 with >=1 candidate   : 9,234
+  Total true matches      : 34,752
+  True matches found      : 20,723
+  True matches lost       : 14,029
+  Candidate recall        : 59.63%
+  Reduction ratio         : 0.001414%
+
+  Projected Full Volume:
+    TRAIN (2,206,821 S1) : ~321,942,964 pairs
+    TEST  (1,732,544 S1)  : ~252,752,874 pairs
+
+UNION B: exact + token_500 + address_100 + prefix_500
+--------------------------------------------------------------------------------
+  Total unique pairs      : 2,079,096
+  Avg candidates / S1     : 207.9
+  Max candidates / S1     : 2,098
+  S1 with >=1 candidate   : 9,288
+  Total true matches      : 34,752
+  True matches found      : 21,287
+  True matches lost       : 13,465
+  Candidate recall        : 61.25%
+  Reduction ratio         : 0.002015%
+
+  Projected Full Volume:
+    TRAIN (2,206,821 S1) : ~458,819,271 pairs
+    TEST  (1,732,544 S1)  : ~360,212,530 pairs
+
+UNION C: exact + token_500 + address_500 + prefix_500
+--------------------------------------------------------------------------------
+  Total unique pairs      : 3,100,195
+  Avg candidates / S1     : 310.0
+  Max candidates / S1     : 2,380
+  S1 with >=1 candidate   : 9,499
+  Total true matches      : 34,752
+  True matches found      : 23,362
+  True matches lost       : 11,390
+  Candidate recall        : 67.22%
+  Reduction ratio         : 0.003004%
+
+  Projected Full Volume:
+    TRAIN (2,206,821 S1) : ~684,157,543 pairs
+    TEST  (1,732,544 S1)  : ~537,122,424 pairs
