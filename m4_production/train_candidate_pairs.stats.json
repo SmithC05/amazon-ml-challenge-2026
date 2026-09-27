@@ -2,10 +2,10 @@
   "n_s1": 2206821,
   "n_with_candidates": 2038507,
   "n_empty": 168314,
-  "total_candidate_ids": 311707961,
+  "total_candidate_ids": 311708686,
   "avg_per_s1": 141.25,
   "max_per_s1": 2679,
-  "candidate_recall": 0.590181,
-  "true_matches_lost": 3130350,
+  "candidate_recall": 0.590183,
+  "true_matches_lost": 3130332,
   "reduction_ratio": null
 }

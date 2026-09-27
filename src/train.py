@@ -3,9 +3,9 @@ src/train.py
 ============
 Baseline training pipeline for the Amazon ML Challenge 2026.
 
-Member 3 deliverable — baseline matching module.
+Member 3 deliverable - baseline matching module.
 
-Memory-safety architecture (v3 — fully disk-backed)
+Memory-safety architecture (v3 - fully disk-backed)
 -----------------------------------------------------
   All three previous memory problems are eliminated:
 
@@ -13,27 +13,27 @@ Memory-safety architecture (v3 — fully disk-backed)
       pyarrow.parquet.ParquetWriter.  No list of frames.  No pd.concat.
 
   Problem 2 (FIXED): Training set selection reads the spool in passes via
-      PyArrow row-group scanning — only the capped training rows (≤ max_train_pairs)
+      PyArrow row-group scanning - only the capped training rows (<= max_train_pairs)
       are materialised into RAM for LogisticRegression.
 
   Problem 3 (FIXED): Threshold sweep is fully streaming.  Validation pairs
       are scored in bounded chunks from the spool.  For each threshold only
-      {s1_id → {matched_ids}} (size = n_val_s1 distinct S1 IDs) is kept in RAM —
+      {s1_id -> {matched_ids}} (size = n_val_s1 distinct S1 IDs) is kept in RAM -
       not the full validation pair DataFrame.
 
 Pipeline
 --------
 1.  Load source records from M2 cache (or raw TSVs).
-2.  Build compact entity lookup dicts — O(1) per-pair join, never a DataFrame merge.
+2.  Build compact entity lookup dicts - O(1) per-pair join, never a DataFrame merge.
 3.  Entity-level split (80/20, random_state=42) BEFORE any candidate scanning.
-4.  Stream candidate TSV in chunk_size rows → expand pairs → write each chunk
-    immediately to Parquet via ParquetWriter → release chunk.
+4.  Stream candidate TSV in chunk_size rows -> expand pairs -> write each chunk
+    immediately to Parquet via ParquetWriter -> release chunk.
 5.  Two-pass spool read:
-      Pass A — count rows and collect all positive (label=1) row indices.
-      Pass B — materialise positives + sampled negatives (up to max_train_pairs).
+      Pass A - count rows and collect all positive (label=1) row indices.
+      Pass B - materialise positives + sampled negatives (up to max_train_pairs).
 6.  Fit StandardScaler + LogisticRegression on the materialised training matrix.
 7.  Streaming threshold sweep: score validation pairs in chunks; accumulate only
-    {s1_id → predicted_set} per threshold (bounded by n_val_s1 entities, not n_pairs).
+    {s1_id -> predicted_set} per threshold (bounded by n_val_s1 entities, not n_pairs).
 8.  Select best threshold; save model + config.
 
 Official metric: entity-level macro F0.5 (competition definition).
@@ -83,9 +83,9 @@ _SPOOL_SCHEMA = pa.schema([
 ])
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Official metric helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 def f_beta(precision: float, recall: float, beta: float = BETA) -> float:
     b2 = beta ** 2
@@ -106,9 +106,9 @@ def entity_f05(truth: set[str], predicted: set[str]) -> float:
     return f_beta(prec, rec)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Data loading helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 def load_sources(
     data_dir: Path,
@@ -123,7 +123,7 @@ def load_sources(
         s1, s2, s3 = load_all_cache(cache_dir, "train")
     else:
         if cache_dir is not None:
-            print("  Cache not found — falling back to raw TSV + M2 normalization")
+            print("  Cache not found - falling back to raw TSV + M2 normalization")
         s1 = preprocess_dataframe(pd.read_csv(data_dir / "train_source1.tsv", sep="\t", dtype=str))
         s2 = preprocess_dataframe(pd.read_csv(data_dir / "train_source2.tsv", sep="\t", dtype=str))
         s3 = preprocess_dataframe(pd.read_csv(data_dir / "train_source3.tsv", sep="\t", dtype=str))
@@ -181,9 +181,9 @@ def entity_split(
     return train_ids, val_ids
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Chunk expansion
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 def _expand_and_label_chunk(
     chunk_df: pd.DataFrame,
@@ -243,9 +243,9 @@ def _expand_and_label_chunk(
     }, schema=_SPOOL_SCHEMA)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Spool reading helpers (disk-backed, bounded RAM)
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 def _select_train_pairs_from_spool(
     spool_path: Path,
@@ -253,36 +253,39 @@ def _select_train_pairs_from_spool(
     random_state: int = RANDOM_STATE,
 ) -> pd.DataFrame:
     """
-    Read the training portion of the spool WITHOUT loading the whole file.
-
-    Pass A: scan row-groups to collect all positive (label=1, is_val=0) row indices.
-    Pass B: stream negatives until budget is filled, then stop reading.
-
-    Returns a DataFrame with at most max_pairs rows.
-    The positives are always retained first; negatives fill the remaining budget.
+    Select training pairs using DuckDB for massive speedup.
+    Selects ALL positives, and up to `budget` negatives deterministically.
     """
-    pf = pq.ParquetFile(spool_path)
+    import duckdb
+    
+    con = duckdb.connect()
 
-    # ── Pass A: collect all positives ──────────────────────────────────────
-    pos_batches: list[pd.DataFrame] = []
-    n_pos = 0
-    for batch in pf.iter_batches(columns=["source1_entity_id", "cand_entity_id",
-                                           "s1_name_norm", "s1_address_norm", "s1_country",
-                                           "cand_name_norm", "cand_address_norm", "cand_country",
-                                           "label", "is_val"]):
-        df = batch.to_pandas()
-        pos = df[(df["is_val"] == 0) & (df["label"] == 1)]
-        if len(pos):
-            pos_batches.append(pos)
-            n_pos += len(pos)
+    # Get available counts
+    res = con.execute(f"""
+        SELECT 
+            SUM(CASE WHEN label = 1 THEN 1 ELSE 0 END) as pos_count,
+            SUM(CASE WHEN label = 0 THEN 1 ELSE 0 END) as neg_count
+        FROM '{spool_path}'
+        WHERE is_val = 0
+    """).fetchone()
 
-    pos_df = pd.concat(pos_batches, ignore_index=True) if pos_batches else pd.DataFrame(columns=list(_SPOOL_SCHEMA.names))
-    del pos_batches
+    n_pos = int(res[0]) if res[0] is not None else 0
+    n_neg_avail = int(res[1]) if res[1] is not None else 0
 
-    n_neg_budget = max_pairs - n_pos
-    if n_neg_budget <= 0:
-        print(f"  ⚠ Positives alone ({n_pos:,}) ≥ cap ({max_pairs:,}) — returning positives only.")
-        return pos_df.drop(columns=["is_val"])
+    if n_pos >= max_pairs:
+        # All-positive retention rule forces us to exceed the requested cap.
+        n_neg_budget = min(n_neg_avail, n_pos)
+        effective_cap = n_pos + n_neg_budget
+        print(f"  WARNING: Positives alone ({n_pos:,}) >= requested cap ({max_pairs:,}).")
+        print(f"    Raising effective cap to {effective_cap:,} to ensure class balance.")
+    else:
+        n_neg_budget = max_pairs - n_pos
+
+    if n_neg_budget <= 0 and n_neg_avail == 0:
+        raise ValueError(
+            f"Cannot train: 0 training negatives available. LogisticRegression requires both classes. "
+            f"(Positives={n_pos})"
+        )
 
     print(
         f"\n  Training pair selection:"
@@ -291,58 +294,44 @@ def _select_train_pairs_from_spool(
         f"\n    Sampling seed        : {random_state}"
     )
 
-    # ── Pass B: reservoir-sample negatives ─────────────────────────────────
-    # Deterministic reservoir sampling: read negatives, keep a random sample of size n_neg_budget.
-    rng = np.random.default_rng(random_state)
-    reservoir: list[pd.DataFrame] = []
-    reservoir_size = 0
-
-    for batch in pf.iter_batches(columns=list(_SPOOL_SCHEMA.names)):
-        df = batch.to_pandas()
-        neg = df[(df["is_val"] == 0) & (df["label"] == 0)]
-        if not len(neg):
-            continue
-
-        if reservoir_size < n_neg_budget:
-            # Room remaining — take as many as fit
-            take = neg.head(n_neg_budget - reservoir_size)
-            reservoir.append(take)
-            reservoir_size += len(take)
-            remaining = neg.iloc[len(take):]
-        else:
-            remaining = neg
-
-        # Reservoir replacement for deterministic uniform sampling
-        for _, row_series in remaining.iterrows():
-            idx = int(rng.integers(0, reservoir_size + 1))
-            if idx < n_neg_budget:
-                # Replace a random slot in one of the reservoir frames
-                # For simplicity track flat index into concatenated reservoir
-                cum = 0
-                for i, frame in enumerate(reservoir):
-                    if cum + len(frame) > idx:
-                        local_idx = idx - cum
-                        reservoir[i] = pd.concat(
-                            [frame.iloc[:local_idx], pd.DataFrame([row_series]), frame.iloc[local_idx + 1:]],
-                            ignore_index=True,
-                        )
-                        break
-                    cum += len(frame)
-            reservoir_size += 1
-
-    neg_df = pd.concat(reservoir, ignore_index=True) if reservoir else pd.DataFrame(columns=list(_SPOOL_SCHEMA.names))
-    del reservoir
-
-    result = pd.concat([pos_df, neg_df], ignore_index=True).drop(columns=["is_val"])
+    query = f"""
+        SELECT * EXCLUDE (is_val) FROM (
+            SELECT * FROM '{spool_path}'
+            WHERE is_val = 0 AND label = 1
+            
+            UNION ALL
+            
+            SELECT * FROM (
+                SELECT * FROM '{spool_path}'
+                WHERE is_val = 0 AND label = 0
+                ORDER BY hash(source1_entity_id || cand_entity_id || '{random_state}')
+                LIMIT {n_neg_budget}
+            )
+        )
+    """
+    
+    print("    Executing vectorized DuckDB selection...")
+    result = con.execute(query).df()
     n_used = len(result)
-    print(f"    Sampled negatives    : {len(neg_df):,}")
-    print(f"    Final training pairs : {n_used:,}  (pos={n_pos:,}  neg={len(neg_df):,})")
-    return result
+    n_neg_used = n_used - n_pos
+
+    print(f"    Sampled negatives    : {n_neg_used:,} / {n_neg_avail:,} available")
+    print(f"    Final training pairs : {n_used:,}  (pos={n_pos:,}  neg={n_neg_used:,})")
+    
+    return result, {
+        "requested_max_train_pairs": max_pairs,
+        "effective_max_train_pairs": max_pairs if n_pos < max_pairs else n_pos + n_neg_budget,
+        "positive_pairs_available": n_pos,
+        "negative_pairs_available": n_neg_avail,
+        "positive_pairs_used": n_pos,
+        "negative_pairs_used": n_neg_used,
+        "class_balance_policy": "All positives retained; deterministic negatives matched up to budget"
+    }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Streaming threshold sweep (v2 — bounded RAM)
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+# Streaming threshold sweep (v2 - bounded RAM)
+# -----------------------------------------------------------------------------
 
 def threshold_sweep_streaming(
     spool_path: Path,
@@ -354,20 +343,20 @@ def threshold_sweep_streaming(
     batch_size: int = _DEFAULT_CHUNK,
 ) -> pd.DataFrame:
     """
-    Streaming threshold sweep — never loads the full validation set into RAM.
+    Streaming threshold sweep - never loads the full validation set into RAM.
 
     For EACH threshold *t*:
-        - keep a dict {s1_id → set of predicted_ids} (size ≤ n_val_s1 entities)
+        - keep a dict {s1_id -> set of predicted_ids} (size <= n_val_s1 entities)
 
     One pass over the validation portion of the spool is needed per threshold.
     To avoid multiple passes we score ALL validation pairs ONCE, write
     (s1_id, cand_id, proba) to a compact in-memory float32 array (bounded by
-    total val pair count, acceptable for typical val set sizes ≤ 500K pairs),
+    total val pair count, acceptable for typical val set sizes <= 500K pairs),
     then do the threshold sweep over that compact array.
 
     If even the compact proba array is too large, use DuckDB-backed approach.
     For the competition scale (~50K val pairs in 10K scenario, ~500K at full scale)
-    a float32 array is negligible (500K × 8 bytes = 4 MB).
+    a float32 array is negligible (500K   8 bytes = 4 MB).
 
     Zero-candidate val entities contribute entity_f05(truth, {}) per truth.
     """
@@ -426,7 +415,7 @@ def threshold_sweep_streaming(
     for t in thresholds:
         mask = arr_probas >= t
 
-        # Build entity-level pred sets (only for entities that have ≥1 positive pred)
+        # Build entity-level pred sets (only for entities that have >=1 positive pred)
         pred_map: dict[int, set[str]] = {}
         codes_pos = arr_codes[mask]
         cands_pos = arr_cands[mask]
@@ -456,9 +445,9 @@ def threshold_sweep_streaming(
     return pd.DataFrame(results)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Training-cap helper (operates on DataFrame after selection)
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 def _apply_train_cap(
     train_df: pd.DataFrame,
@@ -472,7 +461,7 @@ def _apply_train_cap(
     """
     n_available = len(train_df)
     if n_available <= max_pairs:
-        print(f"  Training pairs available : {n_available:,} (≤ cap of {max_pairs:,}, no sampling needed)")
+        print(f"  Training pairs available : {n_available:,} (<= cap of {max_pairs:,}, no sampling needed)")
         return train_df
 
     pos_df = train_df[train_df["label"] == 1].copy()
@@ -481,7 +470,7 @@ def _apply_train_cap(
     n_neg_budget = max_pairs - n_pos
 
     if n_pos >= max_pairs:
-        print(f"  ⚠ Positives alone ({n_pos:,}) exceed cap — returning positives only.")
+        print(f"  WARNING: Positives alone ({n_pos:,}) exceed cap - returning positives only.")
         return pos_df
 
     neg_sampled = neg_df.sample(n=min(n_neg_budget, len(neg_df)), random_state=random_state)
@@ -490,9 +479,9 @@ def _apply_train_cap(
     return result
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Main training entry-point
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 def train(
     data_dir: Path,
@@ -524,73 +513,76 @@ def train(
     del s2, s3
     print(f"  S1={len(s1_lookup):,}  Cand(S2+S3)={len(cand_lookup):,}")
 
-    # 4. ── INCREMENTAL SPOOL WRITE ──────────────────────────────────────────
+    # 4. -- INCREMENTAL SPOOL WRITE ------------------------------------------
     #    Each chunk is converted to a PyArrow Table and written immediately.
     #    NEVER accumulated in a Python list.
     spool_dir  = output_dir / ".pair_spool"
     spool_dir.mkdir(exist_ok=True)
     spool_path = spool_dir / "pairs.parquet"
 
-    total_cand_rows = 0
-    total_pair_rows = 0
-    total_pos       = 0
-    total_neg       = 0
-    chunk_num       = 0
+    if spool_path.exists() and spool_path.stat().st_size > 1_000_000:
+        print(f"\nFound existing spool at {spool_path} ({spool_path.stat().st_size/1e9:.2f} GB). Skipping candidate streaming phase!")
+    else:
+        total_cand_rows = 0
+        total_pair_rows = 0
+        total_pos       = 0
+        total_neg       = 0
+        chunk_num       = 0
+    
+        print(f"\nStreaming candidates -> incrementally spooling to {spool_path} ...")
+        with pq.ParquetWriter(str(spool_path), schema=_SPOOL_SCHEMA) as writer:
+            for chunk_df in pd.read_csv(
+                candidates_path,
+                sep="\t",
+                dtype=str,
+                chunksize=chunk_size,
+                keep_default_na=False,
+            ):
+                chunk_num       += 1
+                total_cand_rows += len(chunk_df)
+    
+                arrow_table = _expand_and_label_chunk(
+                    chunk_df, s1_lookup, cand_lookup, truth_map, val_s1_set
+                )
+    
+                if arrow_table is None or len(arrow_table) == 0:
+                    print(f"  chunk {chunk_num:4d}: {len(chunk_df):6,} cand rows -> 0 pairs (skipped)")
+                    continue
+    
+                n_pairs = len(arrow_table)
+                n_pos_chunk = int(arrow_table.column("label").to_pylist().count(1))
+                total_pair_rows += n_pairs
+                total_pos       += n_pos_chunk
+                total_neg       += n_pairs - n_pos_chunk
+    
+                writer.write_table(arrow_table)
+                del arrow_table  # immediately release chunk
+    
+                spool_bytes = spool_path.stat().st_size
+                print(
+                    f"  chunk {chunk_num:4d}: {len(chunk_df):6,} cand rows -> "
+                    f"{n_pairs:7,} pairs (pos={n_pos_chunk:,}) "
+                    f"| spool {spool_bytes/1e6:.1f} MB"
+                )
+        # -- end of spool write --------------------------------------------------
+    
+        print(
+            f"\nIngestion complete:"
+            f"\n  candidate rows : {total_cand_rows:,}"
+            f"\n  total pairs    : {total_pair_rows:,}  (pos={total_pos:,}  neg={total_neg:,})"
+            f"\n  spool size     : {spool_path.stat().st_size / 1e6:.1f} MB"
+        )
+    
+        if total_pair_rows == 0:
+            raise RuntimeError("No pair rows produced - cannot train. Check candidate file.")
 
-    print(f"\nStreaming candidates → incrementally spooling to {spool_path} ...")
-    with pq.ParquetWriter(str(spool_path), schema=_SPOOL_SCHEMA) as writer:
-        for chunk_df in pd.read_csv(
-            candidates_path,
-            sep="\t",
-            dtype=str,
-            chunksize=chunk_size,
-            keep_default_na=False,
-        ):
-            chunk_num       += 1
-            total_cand_rows += len(chunk_df)
-
-            arrow_table = _expand_and_label_chunk(
-                chunk_df, s1_lookup, cand_lookup, truth_map, val_s1_set
-            )
-
-            if arrow_table is None or len(arrow_table) == 0:
-                print(f"  chunk {chunk_num:4d}: {len(chunk_df):6,} cand rows → 0 pairs (skipped)")
-                continue
-
-            n_pairs = len(arrow_table)
-            n_pos_chunk = int(arrow_table.column("label").to_pylist().count(1))
-            total_pair_rows += n_pairs
-            total_pos       += n_pos_chunk
-            total_neg       += n_pairs - n_pos_chunk
-
-            writer.write_table(arrow_table)
-            del arrow_table  # immediately release chunk
-
-            spool_bytes = spool_path.stat().st_size
-            print(
-                f"  chunk {chunk_num:4d}: {len(chunk_df):6,} cand rows → "
-                f"{n_pairs:7,} pairs (pos={n_pos_chunk:,}) "
-                f"| spool {spool_bytes/1e6:.1f} MB"
-            )
-    # ── end of spool write ──────────────────────────────────────────────────
-
-    print(
-        f"\nIngestion complete:"
-        f"\n  candidate rows : {total_cand_rows:,}"
-        f"\n  total pairs    : {total_pair_rows:,}  (pos={total_pos:,}  neg={total_neg:,})"
-        f"\n  spool size     : {spool_path.stat().st_size / 1e6:.1f} MB"
-    )
-
-    if total_pair_rows == 0:
-        raise RuntimeError("No pair rows produced — cannot train. Check candidate file.")
-
-    # 5. ── DISK-BACKED TRAIN SELECTION ─────────────────────────────────────
-    #    Reads spool in two passes; materialises at most max_train_pairs rows.
-    print(f"\nSelecting training pairs (max={max_train_pairs:,}) from spool ...")
-    train_df = _select_train_pairs_from_spool(spool_path, max_train_pairs)
+    # 5. -- DISK-BACKED TRAIN SELECTION -------------------------------------
+    #    Reads spool in two passes; materialises bounded rows (up to effective cap).
+    print(f"\nSelecting training pairs (requested cap={max_train_pairs:,}) from spool ...")
+    train_df, selection_meta = _select_train_pairs_from_spool(spool_path, max_train_pairs)
     n_train_pos = int((train_df["label"] == 1).sum())
     n_train_neg = len(train_df) - n_train_pos
-    sampling_applied = len(train_df) < (total_pair_rows - total_neg + total_neg)  # always report
+    sampling_applied = selection_meta["negative_pairs_used"] < selection_meta["negative_pairs_available"]
 
     # Count zero-cand val entities (not in spool) via metadata, not full spool load
     pf = pq.ParquetFile(spool_path)
@@ -619,7 +611,7 @@ def train(
     model.fit(X_train_sc, y_train)
     print("Model trained.")
 
-    # 8. ── STREAMING THRESHOLD SWEEP ───────────────────────────────────────
+    # 8. -- STREAMING THRESHOLD SWEEP ---------------------------------------
     #    Validation pairs scored in batches from spool; only compact arrays in RAM.
     print("\nRunning streaming threshold sweep...")
     sweep_df = threshold_sweep_streaming(
@@ -647,7 +639,7 @@ def train(
     model_path = models_dir / "matcher.pkl"
     with open(model_path, "wb") as f:
         pickle.dump((scaler, model), f)
-    print(f"\nModel saved → {model_path}")
+    print(f"\nModel saved -> {model_path}")
 
     # 10. Save config
     config = {
@@ -662,8 +654,14 @@ def train(
         "train_pair_count":         int(n_train_pos + n_train_neg),
         "train_positive_pairs":     n_train_pos,
         "train_negative_pairs":     n_train_neg,
-        "sampling_applied":         (n_train_pos + n_train_neg) < total_pair_rows,
-        "max_train_pairs_cap":      max_train_pairs,
+        "requested_max_train_pairs":selection_meta["requested_max_train_pairs"],
+        "effective_max_train_pairs":selection_meta["effective_max_train_pairs"],
+        "positive_pairs_available": selection_meta["positive_pairs_available"],
+        "negative_pairs_available": selection_meta["negative_pairs_available"],
+        "positive_pairs_used":      selection_meta["positive_pairs_used"],
+        "negative_pairs_used":      selection_meta["negative_pairs_used"],
+        "class_balance_policy":     selection_meta["class_balance_policy"],
+        "sampling_applied":         sampling_applied,
         "sampling_seed":            RANDOM_STATE,
         "precision":                round(best_prec, 6),
         "recall":                   round(best_rec, 6),
@@ -676,7 +674,7 @@ def train(
     config_path = models_dir / "model_config.json"
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2)
-    print(f"Config saved  → {config_path}")
+    print(f"Config saved  -> {config_path}")
 
     with open(output_dir / "baseline_training_results.json", "w") as f:
         json.dump(config, f, indent=2)

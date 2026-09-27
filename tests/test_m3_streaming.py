@@ -72,7 +72,6 @@ from predict import (
 from train import (
     build_truth_map,
     entity_split,
-    _apply_train_cap,
     entity_f05,
     _expand_and_label_chunk,
     threshold_sweep_streaming,
@@ -377,26 +376,62 @@ def test_entity_split_deterministic():
     assert a_val   == b_val
 
 
-def test_apply_train_cap_retains_all_positives():
-    n = 1000
-    df = pd.DataFrame({
-        "source1_entity_id": [f"S1-{i}" for i in range(n)],
-        "cand_entity_id":    [f"S2-{i}" for i in range(n)],
-        "label": [1 if i < 100 else 0 for i in range(n)],
-    })
-    capped = _apply_train_cap(df, max_pairs=200)
-    assert (capped["label"] == 1).sum() == 100
-    assert len(capped) <= 200
+def test_class_balance_1_pos_exceeds_cap_with_neg(tmp_path):
+    """TEST 1: positives > max_train_pairs, negatives available."""
+    spool_path = tmp_path / "spool.parquet"
+    _make_small_spool(spool_path, n_s1=40, n_neg_each=5, n_pos_each=1)
+    # n_s1=40 means 20 train, 20 val. 
+    # Total train pos = 20, Total train neg = 100. Let max_pairs = 15.
+    df, meta = _select_train_pairs_from_spool(spool_path, max_pairs=15)
+    
+    assert (df["label"] == 1).sum() == 20  # All positives retained
+    assert (df["label"] == 0).sum() == 20  # min(n_neg_avail, n_pos) = min(100, 20) = 20
+    assert len(df) == 40
+    assert meta["effective_max_train_pairs"] == 40
 
+def test_class_balance_2_pos_exceeds_cap_no_neg(tmp_path):
+    """TEST 2: positives > max_train_pairs, negatives = 0. Should fail clearly."""
+    spool_path = tmp_path / "spool.parquet"
+    _make_small_spool(spool_path, n_s1=40, n_neg_each=0, n_pos_each=1)
+    
+    with pytest.raises(ValueError, match="0 training negatives available"):
+        _select_train_pairs_from_spool(spool_path, max_pairs=15)
 
-def test_apply_train_cap_no_sampling_under_limit():
-    df = pd.DataFrame({
-        "source1_entity_id": [f"S1-{i}" for i in range(10)],
-        "cand_entity_id":    [f"S2-{i}" for i in range(10)],
-        "label": [0] * 10,
-    })
-    capped = _apply_train_cap(df, max_pairs=1000)
-    assert len(capped) == 10
+def test_class_balance_3_pos_under_cap(tmp_path):
+    """TEST 3: positives < max_train_pairs, normal negative sampling."""
+    spool_path = tmp_path / "spool.parquet"
+    _make_small_spool(spool_path, n_s1=20, n_neg_each=10, n_pos_each=1)
+    # n_s1=20 -> 10 train S1. Train pos = 10, Train neg = 100. Let max_pairs = 50.
+    df, meta = _select_train_pairs_from_spool(spool_path, max_pairs=50)
+    
+    assert (df["label"] == 1).sum() == 10
+    assert (df["label"] == 0).sum() == 40  # 50 - 10
+    assert len(df) == 50
+    assert meta["effective_max_train_pairs"] == 50
+
+def test_class_balance_4_deterministic_sampling(tmp_path):
+    """TEST 4: repeated run with seed=42 produces identical selected pairs."""
+    spool_path = tmp_path / "spool.parquet"
+    _make_small_spool(spool_path, n_s1=40, n_neg_each=20, n_pos_each=1)
+    
+    df1, _ = _select_train_pairs_from_spool(spool_path, max_pairs=100, random_state=42)
+    df2, _ = _select_train_pairs_from_spool(spool_path, max_pairs=100, random_state=42)
+    pd.testing.assert_frame_equal(df1, df2)
+
+def test_class_balance_5_model_fit_succeeds(tmp_path):
+    """TEST 5: model.fit succeeds with the resulting training set."""
+    from sklearn.linear_model import LogisticRegression
+    spool_path = tmp_path / "spool.parquet"
+    _make_small_spool(spool_path, n_s1=40, n_neg_each=5, n_pos_each=1)
+    
+    df, _ = _select_train_pairs_from_spool(spool_path, max_pairs=10) # 20 pos, will take 20 negs
+    X = build_feature_matrix_from_dicts(df.to_dict("records"))
+    y = df["label"].values
+    
+    model = LogisticRegression()
+    model.fit(X, y)
+    assert hasattr(model, "coef_")
+
 
 
 CAND_10K_PATH = REPO_ROOT / "output" / "local_10k" / "candidate_pairs_10k.tsv"
